@@ -1,8 +1,8 @@
 "use client";
 
 import { QRCodeCanvas } from "qrcode.react";
-import { type ChangeEvent, useEffect, useMemo, useState } from "react";
-import { type BranchRecord, createMockBranch, loadMockBranches, saveMockBranches } from "./branchRepository";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type BranchRecord, createMockBranch } from "./branchRepository";
 
 type ModalType = "add" | "qr" | "details" | null;
 
@@ -10,6 +10,62 @@ type MerchantForm = {
   companyName: string;
   branchName: string;
 };
+
+type CompanyDetail = {
+  id: number;
+  companyName: string;
+  branchName: string;
+  status: boolean;
+  admins: number;
+  waiters: number;
+};
+
+function getApiError(payload: unknown, fallback: string, status?: number) {
+  if (!payload || typeof payload !== "object") {
+    if (status === 401) return "The server-configured Hulubeje bearer token is invalid or expired.";
+    if (status === 403) return "Your account is not authorized to manage waiter tips.";
+    return fallback;
+  }
+  const record = payload as Record<string, unknown>;
+  if (Array.isArray(record.errorMessages)) {
+    const messages = record.errorMessages.filter((message): message is string => typeof message === "string");
+    if (messages.length) return messages.join(" ");
+  }
+  if (typeof record.message === "string" && record.message.trim()) return record.message;
+  if (status === 401) return "The server-configured Hulubeje bearer token is invalid or expired.";
+  if (status === 403) return "Your account is not authorized to manage waiter tips.";
+  return fallback;
+}
+
+function mapCompanyDetail(value: unknown): BranchRecord {
+  if (!value || typeof value !== "object") throw new Error("The company list contains an invalid item.");
+  const company = value as Partial<CompanyDetail>;
+  if (
+    typeof company.id !== "number"
+    || typeof company.companyName !== "string"
+    || typeof company.branchName !== "string"
+    || typeof company.status !== "boolean"
+    || typeof company.admins !== "number"
+    || typeof company.waiters !== "number"
+  ) {
+    throw new Error("The company list returned an unexpected response.");
+  }
+
+  return {
+    companyId: company.id,
+    restaurantId: String(company.id),
+    name: company.companyName,
+    branchId: String(company.id),
+    branch: company.branchName,
+    token: "",
+    tippingUrl: "",
+    admins: company.admins,
+    waiters: company.waiters,
+    status: company.status ? "Active" : "Inactive",
+    phone: "",
+    adminList: [],
+  };
+}
 
 function buildInitials(value: string | undefined) {
   const safeValue = (value ?? "").trim();
@@ -39,41 +95,56 @@ export default function WaiterManagement() {
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [selectedMerchant, setSelectedMerchant] = useState<BranchRecord | null>(null);
   const [merchantForm, setMerchantForm] = useState<MerchantForm>({ companyName: "", branchName: "" });
-  const [adminForm, setAdminForm] = useState({ companyName: "", branchName: "", phone: "" });
+  const [adminForm, setAdminForm] = useState({ companyId: "", companyName: "", branchName: "", fullName: "", phone: "" });
   const [logoPreview, setLogoPreview] = useState("");
   const [logoFileName, setLogoFileName] = useState("");
   const [qrGenerated, setQrGenerated] = useState(false);
   const [qrError, setQrError] = useState("");
   const [adminError, setAdminError] = useState("");
-  const [merchants, setMerchants] = useState<BranchRecord[]>(() => loadMockBranches());
+  const [merchants, setMerchants] = useState<BranchRecord[]>([]);
+  const [isLoadingMerchants, setIsLoadingMerchants] = useState(true);
+  const [merchantLoadError, setMerchantLoadError] = useState("");
+  const [isCreatingAdmin, setIsCreatingAdmin] = useState(false);
+
+  const loadMerchants = useCallback(async () => {
+    setIsLoadingMerchants(true);
+    setMerchantLoadError("");
+    try {
+      const response = await fetch("/api/waiter-tips/company", {
+        cache: "no-store",
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(getApiError(payload, "Unable to load merchants.", response.status));
+      if (!Array.isArray(payload)) throw new Error("The company list endpoint returned an unexpected response.");
+      setMerchants(payload.map(mapCompanyDetail));
+    } catch (loadError) {
+      setMerchantLoadError(loadError instanceof Error ? loadError.message : "Unable to load merchants.");
+    } finally {
+      setIsLoadingMerchants(false);
+    }
+  }, []);
 
   useEffect(() => {
-    saveMockBranches(merchants);
-  }, [merchants]);
+    const timeoutId = window.setTimeout(() => void loadMerchants(), 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [loadMerchants]);
 
   const existingMerchantOptions = useMemo(
-    () => merchants.map((merchant) => `${merchant.name} | ${merchant.branch}`),
+    () => merchants.filter((merchant) => merchant.companyId !== undefined),
     [merchants],
   );
-
-  const selectedCompanyBranchValue =
-    adminForm.companyName && adminForm.branchName
-      ? `${adminForm.companyName} | ${adminForm.branchName}`
-      : "choose";
 
   const openAddAdminAccess = () => {
     setAdminError("");
     setActiveModal("add");
-    if (merchants.length > 0) {
-      const firstMerchant = merchants[0];
-      setAdminForm({
-        companyName: firstMerchant.name,
-        branchName: firstMerchant.branch,
-        phone: "",
-      });
-    } else {
-      setAdminForm({ companyName: "", branchName: "", phone: "" });
-    }
+    const firstMerchant = existingMerchantOptions[0];
+    setAdminForm({
+      companyId: firstMerchant?.companyId === undefined ? "" : String(firstMerchant.companyId),
+      companyName: firstMerchant?.name ?? "",
+      branchName: firstMerchant?.branch ?? "",
+      fullName: "",
+      phone: "",
+    });
   };
 
   const openGenerateQr = () => {
@@ -150,94 +221,58 @@ export default function WaiterManagement() {
     setQrError("");
   };
 
-  const addAdminAccess = () => {
-    const chosenCompany = (adminForm.companyName ?? "").trim();
-    const chosenBranch = (adminForm.branchName ?? "").trim();
+  const addAdminAccess = async () => {
+    const companyId = Number(adminForm.companyId);
+    const fullName = adminForm.fullName.trim();
     const cleanPhone = (adminForm.phone ?? "").trim();
 
-    if (!chosenCompany || !chosenBranch) {
+    if (!Number.isInteger(companyId) || companyId <= 0) {
       setAdminError("Please choose an existing company and branch.");
       return;
     }
 
-    if (!cleanPhone) {
-      setAdminError("Please enter a phone number for the admin access.");
+    if (!fullName || !cleanPhone) {
+      setAdminError("Please enter the admin's full name and phone number.");
       return;
     }
 
-    const merchantIndex = merchants.findIndex(
-      (merchant) =>
-        merchant.name.toLowerCase() === chosenCompany.toLowerCase() &&
-        merchant.branch.toLowerCase() === chosenBranch.toLowerCase(),
-    );
+    setIsCreatingAdmin(true);
+    try {
+      const response = await fetch(`/api/waiter-tips/companies/${companyId}/admins`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fullName, phone: cleanPhone }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(getApiError(payload, "Unable to add admin access.", response.status));
 
-    if (merchantIndex < 0) {
-      setAdminError("That company and branch do not exist yet. Create the QR first.");
-      return;
+      const chosenMerchant = merchants.find((merchant) => merchant.companyId === companyId);
+      setMerchants((current) => current.map((merchant) => {
+        if (merchant.companyId !== companyId) return merchant;
+        return {
+          ...merchant,
+          admins: merchant.admins + 1,
+          phone: cleanPhone,
+          adminList: [...merchant.adminList, cleanPhone],
+        };
+      }));
+      setSelectedMerchant((current) => {
+        if (!current || current.companyId !== companyId) return current;
+        return {
+          ...current,
+          admins: current.admins + 1,
+          phone: cleanPhone,
+          adminList: [...current.adminList, cleanPhone],
+        };
+      });
+      setAdminError("");
+      closeModal();
+      if (!chosenMerchant) void loadMerchants();
+    } catch (createError) {
+      setAdminError(createError instanceof Error ? createError.message : "Unable to add admin access.");
+    } finally {
+      setIsCreatingAdmin(false);
     }
-
-    setMerchants((current) =>
-      current.map((merchant, index) => {
-        if (index !== merchantIndex) return merchant;
-
-        const nextAdminList = [...(merchant.adminList || []), cleanPhone];
-
-        return {
-          ...merchant,
-          admins: nextAdminList.length,
-          phone: cleanPhone || merchant.phone,
-          adminList: nextAdminList,
-        };
-      }),
-    );
-
-    setSelectedMerchant((current) =>
-      current && current.name.toLowerCase() === chosenCompany.toLowerCase() && current.branch.toLowerCase() === chosenBranch.toLowerCase()
-        ? {
-            ...current,
-            admins: (current.adminList?.length ?? current.admins) + 1,
-            phone: cleanPhone || current.phone,
-            adminList: [...(current.adminList || []), cleanPhone],
-          }
-        : current,
-    );
-
-    setAdminError("");
-    closeModal();
-  };
-
-  const removeAdmin = (phoneToRemove: string) => {
-    if (!selectedMerchant) return;
-
-    const merchantIndex = merchants.findIndex(
-      (merchant) =>
-        merchant.name.toLowerCase() === selectedMerchant.name.toLowerCase() &&
-        merchant.branch.toLowerCase() === selectedMerchant.branch.toLowerCase(),
-    );
-
-    if (merchantIndex < 0) return;
-
-    setMerchants((current) =>
-      current.map((merchant, index) => {
-        if (index !== merchantIndex) return merchant;
-
-        const nextAdminList = (merchant.adminList || []).filter((adminPhone) => adminPhone !== phoneToRemove);
-        return {
-          ...merchant,
-          admins: nextAdminList.length,
-          adminList: nextAdminList,
-          phone: nextAdminList[0] || "",
-        };
-      }),
-    );
-
-    const nextAdminList = (selectedMerchant.adminList || []).filter((adminPhone) => adminPhone !== phoneToRemove);
-    setSelectedMerchant({
-      ...selectedMerchant,
-      admins: nextAdminList.length,
-      adminList: nextAdminList,
-      phone: nextAdminList[0] || "",
-    });
   };
 
   const handleDownloadQr = (merchant: BranchRecord) => {
@@ -261,7 +296,9 @@ export default function WaiterManagement() {
         <div className="mb-4 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
           <div>
             <h1 className="text-[42px] font-bold tracking-[-0.04em] text-[#1f1d1b]">Waiter Management</h1>
-            <p className="mt-1 text-[18px] text-[#5a544e]">{merchants.length} merchants registered</p>
+            <p className="mt-1 text-[18px] text-[#5a544e]">
+              {isLoadingMerchants ? "Loading merchants..." : `${merchants.length} merchants registered`}
+            </p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -277,6 +314,8 @@ export default function WaiterManagement() {
             <button
               type="button"
               onClick={openGenerateQr}
+              disabled
+              title="Merchant creation and QR generation are pending backend contract clarification."
               className="inline-flex items-center gap-2 rounded-[14px] bg-[#6b1b3d] px-5 py-3 text-[17px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] transition hover:bg-[#58152f]"
             >
               <span className="text-[18px] leading-none">◫</span>
@@ -284,6 +323,20 @@ export default function WaiterManagement() {
             </button>
           </div>
         </div>
+
+        <div className="mb-4 flex items-center justify-between gap-4 text-sm text-[#6b625d]">
+          <p>Creating merchants and QR codes is paused until backend code and token requirements are confirmed.</p>
+          {merchantLoadError && (
+            <button type="button" onClick={() => void loadMerchants()} className="shrink-0 font-semibold text-[#6b1b3d] underline">
+              Retry loading
+            </button>
+          )}
+        </div>
+        {merchantLoadError && (
+          <p role="alert" className="mb-4 rounded-[10px] bg-[#f9e8e8] px-3 py-2 text-sm text-[#8a2d2d]">
+            {merchantLoadError}
+          </p>
+        )}
 
         <div className="overflow-hidden rounded-[18px] border border-[#dcd5d1] bg-[#f8f6f5] shadow-[0_1px_0_rgba(0,0,0,0.04)]">
           <div className="overflow-x-auto">
@@ -300,6 +353,12 @@ export default function WaiterManagement() {
               </thead>
 
               <tbody>
+                {isLoadingMerchants && merchants.length === 0 && (
+                  <tr><td colSpan={6} className="px-6 py-8 text-center text-[#6b625d]">Loading merchants…</td></tr>
+                )}
+                {!isLoadingMerchants && !merchantLoadError && merchants.length === 0 && (
+                  <tr><td colSpan={6} className="px-6 py-8 text-center text-[#6b625d]">No merchants were returned by the API.</td></tr>
+                )}
                 {merchants.map((merchant) => (
                   <tr key={`${merchant.name}-${merchant.branch}`} className="border-t border-[#e7e1de]">
                     <td className="px-6 py-5">
@@ -331,6 +390,8 @@ export default function WaiterManagement() {
                         </button>
                         <button
                           type="button"
+                          disabled
+                          title="Deactivation scope is pending backend confirmation."
                           className="rounded-[12px] border border-[#f0c399] bg-[#fff3e8] px-4 py-2 text-[15px] font-medium text-[#d5782a] transition hover:bg-[#fbe8d4]"
                         >
                           Void QR
@@ -361,24 +422,37 @@ export default function WaiterManagement() {
                   <div>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Name</label>
                     <select
-                      value={selectedCompanyBranchValue}
+                      value={adminForm.companyId || "choose"}
                       onChange={(event) => {
-                        const value = event.target.value;
-                        if (!value || value === "choose") {
-                          setAdminForm((current) => ({ ...current, companyName: "", branchName: "" }));
+                        const company = existingMerchantOptions.find((merchant) => String(merchant.companyId) === event.target.value);
+                        if (!company || company.companyId === undefined) {
+                          setAdminForm((current) => ({ ...current, companyId: "", companyName: "", branchName: "" }));
                           return;
                         }
-
-                        const [companyName, branchName] = value.split(" | ");
-                        setAdminForm((current) => ({ ...current, companyName: companyName || "", branchName: branchName || "" }));
+                        setAdminForm((current) => ({
+                          ...current,
+                          companyId: String(company.companyId),
+                          companyName: company.name,
+                          branchName: company.branch,
+                        }));
                       }}
                       className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
                     >
                       <option value="choose">Select a company</option>
-                      {existingMerchantOptions.map((option) => (
-                        <option key={option} value={option}>{option}</option>
+                      {existingMerchantOptions.map((merchant) => (
+                        <option key={merchant.companyId} value={merchant.companyId}>{merchant.name} | {merchant.branch}</option>
                       ))}
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Full Name</label>
+                    <input
+                      value={adminForm.fullName}
+                      onChange={(event) => setAdminForm((current) => ({ ...current, fullName: event.target.value }))}
+                      placeholder="Admin full name"
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
+                    />
                   </div>
 
                   <div>
@@ -407,8 +481,8 @@ export default function WaiterManagement() {
                   <button type="button" onClick={closeModal} className="h-[54px] flex-1 rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] text-[18px] font-semibold text-[#2d2a28]">
                     Cancel
                   </button>
-                  <button type="button" onClick={addAdminAccess} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)]">
-                    Create
+                  <button type="button" onClick={addAdminAccess} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
+                    {isCreatingAdmin ? "Creating..." : "Create"}
                   </button>
                 </div>
               </>
@@ -527,66 +601,75 @@ export default function WaiterManagement() {
                     </div>
                     <div className="rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] p-3">
                       <div className="text-[12px] uppercase tracking-[0.08em] text-[#5b554f]">QR Status</div>
-                      <div className="mt-2 flex items-center gap-2 text-[15px] font-medium text-[#1d7a57]">
-                        <span className="h-2.5 w-2.5 rounded-full bg-[#25a56b]" />
-                        Active
+                      <div className={`mt-2 flex items-center gap-2 text-[15px] font-medium ${selectedMerchant.status === "Active" ? "text-[#1d7a57]" : "text-[#625c58]"}`}>
+                        <span className={`h-2.5 w-2.5 rounded-full ${selectedMerchant.status === "Active" ? "bg-[#25a56b]" : "bg-[#8e8782]"}`} />
+                        {selectedMerchant.status}
                       </div>
                     </div>
                   </div>
 
                   <div>
                     <h3 className="mb-4 text-[20px] font-semibold text-[#2d2a28]">QR Code</h3>
-                    <div className="flex justify-center">
-                      <QRCodeCanvas
-                        id={`qr-${selectedMerchant.branchId}`}
-                        value={selectedMerchant.tippingUrl}
-                        size={120}
-                        includeMargin={true}
-                        imageSettings={selectedMerchant.logo ? { src: selectedMerchant.logo, height: 28, width: 28, excavate: true } : undefined}
-                      />
-                    </div>
+                    {selectedMerchant.tippingUrl ? (
+                      <>
+                        <div className="flex justify-center">
+                          <QRCodeCanvas
+                            id={`qr-${selectedMerchant.branchId}`}
+                            value={selectedMerchant.tippingUrl}
+                            size={120}
+                            includeMargin={true}
+                            imageSettings={selectedMerchant.logo ? { src: selectedMerchant.logo, height: 28, width: 28, excavate: true } : undefined}
+                          />
+                        </div>
 
-                    <div className="mt-4 text-center text-[15px] text-[#4d4944]">{selectedMerchant.name} | {selectedMerchant.branch}</div>
+                        <div className="mt-4 text-center text-[15px] text-[#4d4944]">{selectedMerchant.name} | {selectedMerchant.branch}</div>
 
-                    <div className="mt-4 space-y-2">
-                      <label htmlFor="branch-tipping-url" className="block text-[14px] font-medium text-[#4d4944]">Tipping URL</label>
-                      <input
-                        id="branch-tipping-url"
-                        readOnly
-                        value={selectedMerchant.tippingUrl}
-                        className="h-[46px] w-full rounded-[12px] border border-[#d8d1ce] bg-[#f5f2f1] px-3 text-[14px] text-[#2f2b29] outline-none"
-                      />
-                    </div>
+                        <div className="mt-4 space-y-2">
+                          <label htmlFor="branch-tipping-url" className="block text-[14px] font-medium text-[#4d4944]">Tipping URL</label>
+                          <input
+                            id="branch-tipping-url"
+                            readOnly
+                            value={selectedMerchant.tippingUrl}
+                            className="h-[46px] w-full rounded-[12px] border border-[#d8d1ce] bg-[#f5f2f1] px-3 text-[14px] text-[#2f2b29] outline-none"
+                          />
+                        </div>
 
-                    <div className="mt-5 flex justify-center">
-                      <button type="button" onClick={() => handleDownloadQr(selectedMerchant)} className="inline-flex items-center gap-2 text-[18px] font-semibold text-[#b05575]">
-                        <span>↓</span>
-                        Download QR
-                      </button>
-                    </div>
+                        <div className="mt-5 flex justify-center">
+                          <button type="button" onClick={() => handleDownloadQr(selectedMerchant)} className="inline-flex items-center gap-2 text-[18px] font-semibold text-[#b05575]">
+                            <span>↓</span>
+                            Download QR
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="rounded-[12px] border border-dashed border-[#d7d1ce] bg-[#f8f5f4] p-3 text-center text-[15px] text-[#5a544e]">
+                        QR details are not returned by the current company API.
+                      </p>
+                    )}
                   </div>
 
                   <div>
                     <h3 className="mb-4 text-[20px] font-semibold text-[#2d2a28]">Admins</h3>
+                    {selectedMerchant.admins > 0 && selectedMerchant.adminList.length === 0 && (
+                      <p className="mb-3 text-sm text-[#6b625d]">The company list API provides the admin count, but not the admins’ phone numbers.</p>
+                    )}
                     <div className="space-y-3">
-                      {(selectedMerchant.adminList?.length ? selectedMerchant.adminList : selectedMerchant.phone ? [selectedMerchant.phone] : []).map((adminPhone) => (
+                      {selectedMerchant.adminList.map((adminPhone) => (
                         <div key={adminPhone} className="flex items-center justify-between rounded-[12px] border border-[#ded8d5] bg-[#f7f3f1] p-3">
                           <div>
                             <div className="text-[18px] font-medium text-[#2d2a28]">{selectedMerchant.name} · {selectedMerchant.branch}</div>
                             <div className="mt-1 text-[15px] text-[#5a544e]">{adminPhone}</div>
                           </div>
-                          <button type="button" onClick={() => removeAdmin(adminPhone)} className="text-[15px] font-medium text-[#b05575]">
-                            Remove
-                          </button>
                         </div>
                       ))}
 
-                      {(!selectedMerchant.adminList || selectedMerchant.adminList.length === 0) && !selectedMerchant.phone && (
+                      {selectedMerchant.adminList.length === 0 && selectedMerchant.admins === 0 && (
                         <div className="rounded-[12px] border border-dashed border-[#d7d1ce] bg-[#f8f5f4] p-3 text-[15px] text-[#5a544e]">
                           No admins assigned yet.
                         </div>
                       )}
                     </div>
+                    <p className="mt-3 text-sm text-[#6b625d]">Admin removal is unavailable because no removal endpoint is documented.</p>
                   </div>
                 </div>
               </>
@@ -597,4 +680,3 @@ export default function WaiterManagement() {
     </main>
   );
 }
-

@@ -11,16 +11,21 @@ import {
   type AppPageId,
 } from "../auth/accessControl";
 
-type UGCInvitee = {
-  orderCount?: number;
-  unpaidAmount?: number;
+type UGCKeyMetrics = {
+  merchantLinks: number;
+  staffLinks: number;
+  userLinks: number;
+  totalInvitedUsers: number;
+  activeReferrals: number;
+  expiredReferrals: number;
+  totalOrders: number;
+  totalCommission: number;
 };
 
-type UGCReferrer = {
-  status: string;
-  referrals?: number;
-  referralDetails?: UGCInvitee[];
-  unpaidAmount?: number;
+type UGCActivity = {
+  metrics: UGCKeyMetrics;
+  pendingOrderCount: number;
+  pendingCommission: number | null;
 };
 
 type EventSummary = {
@@ -53,7 +58,7 @@ function metric(label: string, value: number | string): Metric {
 export default function OverviewDashboard() {
   const [account, setAccount] = useState<AdminAccount | null>(null);
   const [today, setToday] = useState("");
-  const [ugcRecords, setUgcRecords] = useState<UGCReferrer[] | null>(null);
+  const [ugcActivity, setUgcActivity] = useState<UGCActivity | null>(null);
   const [ugcError, setUgcError] = useState("");
   const [eventSummary, setEventSummary] = useState<EventSummary | null>(null);
   const [eventSource, setEventSource] = useState<"live" | "sample" | null>(null);
@@ -80,13 +85,31 @@ export default function OverviewDashboard() {
   useEffect(() => {
     if (!account || !canAccessPath(account, "/UGC")) return;
     let isCurrent = true;
-    fetch("/api/ugc/dashboard", { cache: "no-store" })
-      .then(async (response) => {
-        const payload = await response.json() as { isSuccessful?: boolean; data?: UGCReferrer[]; errorMessages?: string[] };
-        if (!response.ok || !payload.isSuccessful) {
-          throw new Error(payload.errorMessages?.join(" ") || "Unable to load UGC activity.");
+    Promise.all([
+      fetch("/api/ugc/kpis", { cache: "no-store" }),
+      fetch("/api/ugc/orders?status=pending&page=1&pageSize=100", { cache: "no-store" }),
+    ])
+      .then(async ([kpiResponse, ordersResponse]) => {
+        const [kpiPayload, ordersPayload] = await Promise.all([kpiResponse.json(), ordersResponse.json()]) as [
+          { isSuccessful?: boolean; data?: UGCKeyMetrics; errorMessages?: string[] },
+          { isSuccessful?: boolean; data?: { items?: Array<{ commissionAmount?: number }>; totalCount?: number; hasNext?: boolean }; errorMessages?: string[] },
+        ];
+        if (!kpiResponse.ok || !kpiPayload.isSuccessful || !kpiPayload.data) {
+          throw new Error(kpiPayload.errorMessages?.join(" ") || "Unable to load UGC KPIs.");
         }
-        if (isCurrent) setUgcRecords(Array.isArray(payload.data) ? payload.data : []);
+        if (!ordersResponse.ok || !ordersPayload.isSuccessful || !ordersPayload.data || !Array.isArray(ordersPayload.data.items) || typeof ordersPayload.data.totalCount !== "number") {
+          throw new Error(ordersPayload.errorMessages?.join(" ") || "Unable to load pending UGC orders.");
+        }
+        const pendingCommission = ordersPayload.data.hasNext
+          ? null
+          : ordersPayload.data.items.reduce((total, order) => total + (order.commissionAmount ?? 0), 0);
+        if (isCurrent) {
+          setUgcActivity({
+            metrics: kpiPayload.data,
+            pendingOrderCount: ordersPayload.data.totalCount,
+            pendingCommission,
+          });
+        }
       })
       .catch((error: unknown) => {
         if (isCurrent) setUgcError(error instanceof Error ? error.message : "Unable to load UGC activity.");
@@ -122,19 +145,13 @@ export default function OverviewDashboard() {
     ? appPages.filter((page) => canAccessPath(account, workspaceDetails[page.id].href))
     : [];
 
-  const pendingOrderCount = ugcRecords?.reduce((total, record) => total + (record.referralDetails || []).reduce((count, invitee) => count + (invitee.orderCount || 0), 0), 0) || 0;
-
-  const ugcMetrics: Metric[] = ugcRecords ? [
-    metric("Affiliate links", ugcRecords.length),
-    metric("Active links", ugcRecords.filter((record) => record.status.toLowerCase() === "active").length),
-    metric("Invited users", ugcRecords.reduce((total, record) => total + (record.referrals || 0), 0)),
-    metric("Unpaid orders", ugcRecords.reduce((total, record) => total + (record.referralDetails || []).reduce((count, invitee) => count + (invitee.orderCount || 0), 0), 0)),
+  const pendingOrderCount = ugcActivity?.pendingOrderCount ?? 0;
+  const ugcMetrics: Metric[] = ugcActivity ? [
+    metric("Affiliate links", ugcActivity.metrics.merchantLinks + ugcActivity.metrics.staffLinks + ugcActivity.metrics.userLinks),
+    metric("Active referrals", ugcActivity.metrics.activeReferrals),
+    metric("Invited users", ugcActivity.metrics.totalInvitedUsers),
+    metric("Referred orders", ugcActivity.metrics.totalOrders),
   ] : [];
-
-  const unpaidCommission = ugcRecords?.reduce((total, record) => total + (record.referralDetails || []).reduce(
-    (amount, invitee) => amount + (invitee.orderCount ? invitee.unpaidAmount || 0 : 0),
-    0,
-  ), 0) || 0;
 
   const eventMetrics: Metric[] = eventSummary ? [
     metric("Tickets booked", eventSummary.totalBookings),
@@ -164,10 +181,10 @@ export default function OverviewDashboard() {
           </div>
           <div className="border-l-2 border-[#e0784f] bg-white px-4 py-4 sm:px-5">
             {ugcError ? <p className="text-sm text-[#738184]">UGC activity is unavailable right now.</p>
-              : ugcRecords === null ? <p className="text-sm text-[#738184]">Checking for unpaid referred orders...</p>
+              : ugcActivity === null ? <p className="text-sm text-[#738184]">Checking for unpaid referred orders...</p>
                 : hasPendingOrders ? <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-[#27313b]">{ugcMetrics.find((item) => item.label === "Unpaid orders")?.value} referred orders awaiting payment</p>
-                  <span className="text-sm font-semibold text-[#9b263c]">{formatAmount(unpaidCommission)}</span>
+                  <p className="text-sm font-medium text-[#27313b]">{pendingOrderCount.toLocaleString()} referred orders awaiting payment</p>
+                  <span className="text-sm font-semibold text-[#9b263c]">{ugcActivity.pendingCommission === null ? "See orders for commission total" : formatAmount(ugcActivity.pendingCommission)}</span>
                 </div>
                   : <p className="text-sm text-[#405658]">No referred orders are awaiting payment.</p>}
           </div>
@@ -185,10 +202,10 @@ export default function OverviewDashboard() {
                 <p className="mt-1 text-xs text-[#738184]">Affiliate activity and commissions</p>
               </div>
               {ugcError ? <p className="text-sm text-[#738184]">UGC activity is unavailable right now.</p>
-                : ugcRecords === null ? <p className="text-sm text-[#738184]">Loading affiliate activity...</p>
+                : ugcActivity === null ? <p className="text-sm text-[#738184]">Loading affiliate activity...</p>
                   : <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                     {ugcMetrics.map((item) => <div key={item.label}><dt className="text-[11px] text-[#738184]">{item.label}</dt><dd className="mt-1 text-lg font-semibold text-[#183c3d]">{item.value}</dd></div>)}
-                    <div className="col-span-2 sm:col-span-4"><dt className="text-[11px] text-[#738184]">Unpaid commission</dt><dd className="mt-1 text-sm font-semibold text-[#9b263c]">{formatAmount(unpaidCommission)}</dd></div>
+                    <div className="col-span-2 sm:col-span-4"><dt className="text-[11px] text-[#738184]">Paid commission</dt><dd className="mt-1 text-sm font-semibold text-[#9b263c]">{formatAmount(ugcActivity.metrics.totalCommission)}</dd></div>
                   </dl>}
             </article>}
 

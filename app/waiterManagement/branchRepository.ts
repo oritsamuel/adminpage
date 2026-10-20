@@ -1,4 +1,5 @@
 export type BranchRecord = {
+  companyId?: number;
   restaurantId: string;
   name: string;
   branchId: string;

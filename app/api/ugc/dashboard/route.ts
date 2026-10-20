@@ -1,19 +1,69 @@
 import { NextResponse } from "next/server";
-
-const API_URL = "https://v7-hulubeje.cnetcommerce.com";
-const API_KEY = "5D5EAFF4-D29A-485B-BDB9-785EF86FFFAE";
+import { proxyApiRequest, withSearchParams } from "@/app/api/_utils/ugcProxy";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  try {
-    const response = await fetch(`${API_URL}/api/auth/ugcdashboard`, {
-      headers: { "x-api-key": API_KEY, "Content-Type": "application/json" },
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    return NextResponse.json(payload, { status: response.ok ? 200 : response.status });
-  } catch {
-    return NextResponse.json({ isSuccessful: false, data: [], errorMessages: ["Unable to load UGC dashboard."] }, { status: 502 });
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+
+  const response = await proxyApiRequest({
+    path: withSearchParams("/links", url.searchParams),
+  });
+
+  const payload = await response.json() as { isSuccessful?: boolean; data?: unknown; [key: string]: unknown };
+  if (!response.ok || payload.isSuccessful === false) {
+    return NextResponse.json(payload, { status: response.status });
   }
+  const pageData = payload?.data;
+  const items = pageData && typeof pageData === "object" && "items" in pageData
+    ? (pageData as { items?: unknown }).items
+    : null;
+
+  if (!Array.isArray(items)) {
+    return NextResponse.json(
+      { isSuccessful: false, errorMessages: ["The /links endpoint returned an unexpected response."] },
+      { status: 502 },
+    );
+  }
+
+  const records = items.map((value) => {
+    const item = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    const link = item.link;
+    const linkUrl = typeof link === "string" ? new URL(link, "https://hulubeje.invalid") : null;
+    const code = linkUrl?.searchParams.get("ref") ?? "";
+
+    return {
+      id: item.ownerId,
+      name: item.ownerName,
+      phone: item.ownerPhone,
+      affiliateType: item.type,
+      merchantId: item.merchantId,
+      merchant: item.merchantName,
+      branchId: item.branchId,
+      branch: item.branchName,
+      referrals: item.registrations,
+      code,
+      affiliateLink: link,
+    };
+  });
+
+  const pagination = pageData as {
+    page?: number;
+    pageSize?: number;
+    totalCount?: number;
+    totalPages?: number;
+    hasNext?: boolean;
+  };
+
+  return NextResponse.json({
+    ...payload,
+    data: records,
+    pagination: {
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+      totalCount: pagination.totalCount,
+      totalPages: pagination.totalPages,
+      hasNext: pagination.hasNext,
+    },
+  }, { status: response.status });
 }
