@@ -2,9 +2,9 @@
 
 import { QRCodeCanvas } from "qrcode.react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { type BranchRecord, createMockBranch } from "./branchRepository";
+import { type BranchRecord } from "./branchRepository";
 
-type ModalType = "add" | "qr" | "details" | null;
+type ModalType = "add" | "admin" | "qr" | "details" | null;
 
 type MerchantForm = {
   companyName: string;
@@ -18,6 +18,16 @@ type CompanyDetail = {
   status: boolean;
   admins: number;
   waiters: number;
+};
+
+type MerchantOption = {
+  id: string;
+  name: string;
+};
+
+type BranchOption = {
+  id: string;
+  name: string;
 };
 
 function getApiError(payload: unknown, fallback: string, status?: number) {
@@ -35,6 +45,14 @@ function getApiError(payload: unknown, fallback: string, status?: number) {
   if (status === 401) return "The server-configured Hulubeje bearer token is invalid or expired.";
   if (status === 403) return "Your account is not authorized to manage waiter tips.";
   return fallback;
+}
+
+function buildFrontEndTipUrl(companyId: number | string, branchId: number | string) {
+  const baseUrl = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
+  const url = new URL("/tip", baseUrl);
+  url.searchParams.set("companyId", String(companyId));
+  url.searchParams.set("branchId", String(branchId));
+  return url.toString();
 }
 
 function mapCompanyDetail(value: unknown): BranchRecord {
@@ -67,6 +85,40 @@ function mapCompanyDetail(value: unknown): BranchRecord {
   };
 }
 
+function extractOptionList(payload: unknown, target: "merchant" | "branch") {
+  const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+  const candidateCollections: unknown[] = [
+    payload,
+    root?.data,
+    root?.result,
+    root?.items,
+    root?.value,
+    root?.data && typeof root.data === "object" ? (root.data as Record<string, unknown>).items : null,
+    root?.data && typeof root.data === "object" ? (root.data as Record<string, unknown>).data : null,
+  ];
+
+  const list = candidateCollections.find(Array.isArray);
+  if (!Array.isArray(list)) return [];
+
+  return list.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    const idCandidates = ["id", target === "merchant" ? "merchantId" : "branchId", "merchant_id", "branch_id"];
+    const nameCandidates = [
+      "name",
+      target === "merchant" ? "merchantName" : "branchName",
+      "companyName",
+      "branchName",
+      "title",
+      "branch",
+    ];
+    const id = idCandidates.map((key) => item[key]).find((value): value is string | number => value !== undefined && value !== null && value !== "") ?? "";
+    const name = nameCandidates.map((key) => item[key]).find((value): value is string | number => value !== undefined && value !== null && value !== "") ?? "";
+    if (!id || !name) return [];
+    return [{ id: String(id), name: String(name) }];
+  });
+}
+
 function buildInitials(value: string | undefined) {
   const safeValue = (value ?? "").trim();
   return safeValue
@@ -95,7 +147,7 @@ export default function WaiterManagement() {
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [selectedMerchant, setSelectedMerchant] = useState<BranchRecord | null>(null);
   const [merchantForm, setMerchantForm] = useState<MerchantForm>({ companyName: "", branchName: "" });
-  const [adminForm, setAdminForm] = useState({ companyId: "", companyName: "", branchName: "", fullName: "", phone: "" });
+  const [adminForm, setAdminForm] = useState({ companyId: "", companyCode: "", branchCode: "", companyName: "", branchName: "", fullName: "", phone: "", remark: "" });
   const [logoPreview, setLogoPreview] = useState("");
   const [logoFileName, setLogoFileName] = useState("");
   const [qrGenerated, setQrGenerated] = useState(false);
@@ -105,6 +157,84 @@ export default function WaiterManagement() {
   const [isLoadingMerchants, setIsLoadingMerchants] = useState(true);
   const [merchantLoadError, setMerchantLoadError] = useState("");
   const [isCreatingAdmin, setIsCreatingAdmin] = useState(false);
+  const [merchantOptions, setMerchantOptions] = useState<MerchantOption[]>([]);
+  const [branchOptions, setBranchOptions] = useState<BranchOption[]>([]);
+  const [isLoadingMerchantOptions, setIsLoadingMerchantOptions] = useState(false);
+  const [isLoadingBranchOptions, setIsLoadingBranchOptions] = useState(false);
+  const [merchantOptionsError, setMerchantOptionsError] = useState("");
+
+  const generateCompanyCode = useCallback(() => {
+    const maxCode = 999999;
+    const minCode = 1000;
+    return String(Math.floor(Math.random() * (maxCode - minCode + 1)) + minCode);
+  }, []);
+
+  const loadMerchantOptions = useCallback(async () => {
+    setIsLoadingMerchantOptions(true);
+    setMerchantOptionsError("");
+    try {
+      const response = await fetch("/api/auth/merchants", { cache: "no-store" });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(getApiError(payload, "Unable to load company options.", response.status));
+      const nextOptions = extractOptionList(payload, "merchant");
+      setMerchantOptions(nextOptions);
+      if (!nextOptions.length) {
+        setBranchOptions([]);
+        setAdminForm((current) => ({ ...current, companyId: "", companyCode: "", companyName: "", branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+        return;
+      }
+      const firstMerchant = nextOptions[0];
+      setAdminForm((current) => ({
+        ...current,
+        companyId: firstMerchant.id,
+        companyCode: firstMerchant.id,
+        companyName: firstMerchant.name,
+        branchCode: "",
+        branchName: "",
+      }));
+      await loadBranchOptions(firstMerchant.id);
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : "Unable to load company options.";
+      setMerchantOptionsError(message);
+      setMerchantOptions([]);
+      setBranchOptions([]);
+      setAdminForm((current) => ({ ...current, companyId: "", companyCode: "", companyName: "", branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+    } finally {
+      setIsLoadingMerchantOptions(false);
+    }
+  }, [generateCompanyCode]);
+
+  const loadBranchOptions = useCallback(async (merchantId: string) => {
+    if (!merchantId) {
+      setBranchOptions([]);
+      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+      return;
+    }
+    setIsLoadingBranchOptions(true);
+    try {
+      const response = await fetch(`/api/auth/merchants/${encodeURIComponent(merchantId)}/branches`, { cache: "no-store" });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(getApiError(payload, "Unable to load branch options.", response.status));
+      const nextOptions = extractOptionList(payload, "branch");
+      setBranchOptions(nextOptions);
+      const selectedBranch = nextOptions[0];
+      setAdminForm((current) => ({
+        ...current,
+        companyId: merchantId,
+        companyCode: merchantId,
+        companyName: merchantOptions.find((option) => option.id === merchantId)?.name ?? current.companyName,
+        branchCode: selectedBranch?.id ?? "",
+        branchName: selectedBranch?.name ?? "",
+      }));
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : "Unable to load branch options.";
+      setMerchantOptionsError(message);
+      setBranchOptions([]);
+      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+    } finally {
+      setIsLoadingBranchOptions(false);
+    }
+  }, [generateCompanyCode, merchantOptions]);
 
   const loadMerchants = useCallback(async () => {
     setIsLoadingMerchants(true);
@@ -134,17 +264,20 @@ export default function WaiterManagement() {
     [merchants],
   );
 
-  const openAddAdminAccess = () => {
+  const openAddAdminAccess = async () => {
     setAdminError("");
     setActiveModal("add");
-    const firstMerchant = existingMerchantOptions[0];
     setAdminForm({
-      companyId: firstMerchant?.companyId === undefined ? "" : String(firstMerchant.companyId),
-      companyName: firstMerchant?.name ?? "",
-      branchName: firstMerchant?.branch ?? "",
+      companyId: "",
+      companyCode: "",
+      branchCode: "",
+      companyName: "",
+      branchName: "",
       fullName: "",
       phone: "",
+      remark: "",
     });
+    await loadMerchantOptions();
   };
 
   const openGenerateQr = () => {
@@ -188,7 +321,7 @@ export default function WaiterManagement() {
     setLogoFileName("");
   };
 
-  const saveMerchant = () => {
+  const saveMerchant = async () => {
     const cleanCompanyName = (merchantForm.companyName ?? "").trim();
     const cleanBranchName = (merchantForm.branchName ?? "").trim();
 
@@ -210,29 +343,130 @@ export default function WaiterManagement() {
       return;
     }
 
-    const nextMerchant = createMockBranch(
-      { companyName: cleanCompanyName, branchName: cleanBranchName, logo: logoPreview },
-      merchants,
-    );
+    const nextCompanyCode = merchants.reduce((maxCode, merchant) => {
+      const knownCode = typeof merchant.companyId === "number" ? merchant.companyId : 0;
+      return Math.max(maxCode, knownCode);
+    }, 0) + 1;
+    const nextBranchCode = 1;
 
-    setMerchants((current) => [nextMerchant, ...current]);
-    setSelectedMerchant(nextMerchant);
-    setQrGenerated(true);
-    setQrError("");
+    try {
+      const response = await fetch("/api/waiter-tips/company", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyCode: nextCompanyCode,
+          branchCode: nextBranchCode,
+          companyName: cleanCompanyName,
+          branchName: cleanBranchName,
+        }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(getApiError(payload, "Unable to create the merchant company.", response.status));
+      }
+
+      const createdCompany = payload && typeof payload === "object" ? payload as Partial<CompanyDetail> : null;
+      if (!createdCompany || typeof createdCompany.id !== "number") {
+        throw new Error("The company creation endpoint returned an unexpected response.");
+      }
+
+      const nextMerchant = mapCompanyDetail(createdCompany);
+      nextMerchant.logo = logoPreview;
+
+      setMerchants((current) => [nextMerchant, ...current]);
+      setSelectedMerchant(nextMerchant);
+      setQrGenerated(true);
+      setQrError("");
+    } catch (createError) {
+      const fallback = createError instanceof Error ? createError.message : "Unable to create the merchant company.";
+      setQrError(fallback);
+    }
   };
 
   const addAdminAccess = async () => {
-    const companyId = Number(adminForm.companyId);
-    const fullName = adminForm.fullName.trim();
-    const cleanPhone = (adminForm.phone ?? "").trim();
+    const companyCode = Number(adminForm.companyId);
+    const branchCode = Number(adminForm.branchCode);
+    const cleanCompany = adminForm.companyName.trim();
+    const cleanBranch = adminForm.branchName.trim();
 
-    if (!Number.isInteger(companyId) || companyId <= 0) {
-      setAdminError("Please choose an existing company and branch.");
+    if (!cleanCompany || !cleanBranch) {
+      setAdminError("Please choose both the company and branch from the dropdowns.");
       return;
     }
 
-    if (!fullName || !cleanPhone) {
-      setAdminError("Please enter the admin's full name and phone number.");
+    if (!Number.isInteger(companyCode) || companyCode <= 0) {
+      setAdminError("Please select a valid company from the dropdown.");
+      return;
+    }
+
+    if (!Number.isInteger(branchCode) || branchCode <= 0) {
+      setAdminError("Please select a valid branch from the dropdown.");
+      return;
+    }
+
+    setIsCreatingAdmin(true);
+    try {
+      const response = await fetch("/api/waiter-tips/company", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyCode,
+          branchCode,
+          companyName: cleanCompany,
+          branchName: cleanBranch,
+        }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(getApiError(payload, "Unable to add company.", response.status));
+
+      const tippingUrl = buildFrontEndTipUrl(companyCode, branchCode);
+
+      setAdminError("");
+      closeModal();
+      await loadMerchants();
+
+      setMerchants((current) =>
+        current.map((merchant) =>
+          merchant.name === cleanCompany && merchant.branch === cleanBranch && !merchant.tippingUrl
+            ? { ...merchant, tippingUrl }
+            : merchant,
+        ),
+      );
+    } catch (createError) {
+      setAdminError(createError instanceof Error ? createError.message : "Unable to add company.");
+    } finally {
+      setIsCreatingAdmin(false);
+    }
+  };
+
+  const openAddAdminForMerchant = (merchant: BranchRecord) => {
+    setAdminError("");
+    setActiveModal("admin");
+    setAdminForm({
+      companyId: merchant.companyId === undefined ? "" : String(merchant.companyId),
+      companyCode: "",
+      branchCode: "",
+      companyName: merchant.name,
+      branchName: merchant.branch,
+      fullName: "",
+      phone: "",
+      remark: "",
+    });
+  };
+
+  const createCompanyAdmin = async () => {
+    const companyId = Number(adminForm.companyId);
+    const fullName = adminForm.fullName.trim();
+    const phone = adminForm.phone.trim();
+    const remark = adminForm.remark.trim();
+
+    if (!Number.isInteger(companyId) || companyId <= 0) {
+      setAdminError("Please select a valid company.");
+      return;
+    }
+
+    if (!fullName || !phone) {
+      setAdminError("Please enter the admin full name and phone number.");
       return;
     }
 
@@ -241,35 +475,16 @@ export default function WaiterManagement() {
       const response = await fetch(`/api/waiter-tips/companies/${companyId}/admins`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, phone: cleanPhone }),
+        body: JSON.stringify({ fullName, phone, remark }),
       });
       const payload: unknown = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(getApiError(payload, "Unable to add admin access.", response.status));
+      if (!response.ok) throw new Error(getApiError(payload, "Unable to add admin.", response.status));
 
-      const chosenMerchant = merchants.find((merchant) => merchant.companyId === companyId);
-      setMerchants((current) => current.map((merchant) => {
-        if (merchant.companyId !== companyId) return merchant;
-        return {
-          ...merchant,
-          admins: merchant.admins + 1,
-          phone: cleanPhone,
-          adminList: [...merchant.adminList, cleanPhone],
-        };
-      }));
-      setSelectedMerchant((current) => {
-        if (!current || current.companyId !== companyId) return current;
-        return {
-          ...current,
-          admins: current.admins + 1,
-          phone: cleanPhone,
-          adminList: [...current.adminList, cleanPhone],
-        };
-      });
       setAdminError("");
       closeModal();
-      if (!chosenMerchant) void loadMerchants();
+      void loadMerchants();
     } catch (createError) {
-      setAdminError(createError instanceof Error ? createError.message : "Unable to add admin access.");
+      setAdminError(createError instanceof Error ? createError.message : "Unable to add admin.");
     } finally {
       setIsCreatingAdmin(false);
     }
@@ -308,14 +523,12 @@ export default function WaiterManagement() {
               className="inline-flex items-center gap-2 rounded-[14px] border border-[#d5d0cc] bg-[#f7f3f1] px-5 py-3 text-[17px] font-medium text-[#2d2a28] shadow-[0_1px_0_rgba(0,0,0,0.03)] transition hover:bg-[#f0ecea]"
             >
               <span className="text-[19px] leading-none">＋</span>
-              Add Admin Access
+              Add Company
             </button>
 
             <button
               type="button"
               onClick={openGenerateQr}
-              disabled
-              title="Merchant creation and QR generation are pending backend contract clarification."
               className="inline-flex items-center gap-2 rounded-[14px] bg-[#6b1b3d] px-5 py-3 text-[17px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] transition hover:bg-[#58152f]"
             >
               <span className="text-[18px] leading-none">◫</span>
@@ -325,7 +538,7 @@ export default function WaiterManagement() {
         </div>
 
         <div className="mb-4 flex items-center justify-between gap-4 text-sm text-[#6b625d]">
-          <p>Creating merchants and QR codes is paused until backend code and token requirements are confirmed.</p>
+          <p>Company creation and QR generation now follow the latest waiter tips API contract.</p>
           {merchantLoadError && (
             <button type="button" onClick={() => void loadMerchants()} className="shrink-0 font-semibold text-[#6b1b3d] underline">
               Retry loading
@@ -390,11 +603,10 @@ export default function WaiterManagement() {
                         </button>
                         <button
                           type="button"
-                          disabled
-                          title="Deactivation scope is pending backend confirmation."
+                          onClick={() => openAddAdminForMerchant(merchant)}
                           className="rounded-[12px] border border-[#f0c399] bg-[#fff3e8] px-4 py-2 text-[15px] font-medium text-[#d5782a] transition hover:bg-[#fbe8d4]"
                         >
-                          Void QR
+                          Add Admin
                         </button>
                       </div>
                     </td>
@@ -416,33 +628,84 @@ export default function WaiterManagement() {
           <div className="max-h-[90vh] w-full max-w-[520px] overflow-y-auto rounded-[18px] border border-[#ded8d5] bg-[#f3f0ee] p-5 shadow-[0_20px_60px_rgba(10,10,12,0.18)]">
             {activeModal === "add" && (
               <>
-                <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Admin Access</h2>
+                <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Company</h2>
 
                 <div className="space-y-5">
                   <div>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Name</label>
                     <select
                       value={adminForm.companyId || "choose"}
-                      onChange={(event) => {
-                        const company = existingMerchantOptions.find((merchant) => String(merchant.companyId) === event.target.value);
-                        if (!company || company.companyId === undefined) {
-                          setAdminForm((current) => ({ ...current, companyId: "", companyName: "", branchName: "" }));
+                      onChange={async (event) => {
+                        const nextMerchantId = event.target.value;
+                        if (!nextMerchantId || nextMerchantId === "choose") {
+                          setAdminForm((current) => ({ ...current, companyId: "", companyCode: "", companyName: "", branchCode: "", branchName: "" }));
+                          setBranchOptions([]);
                           return;
                         }
-                        setAdminForm((current) => ({
-                          ...current,
-                          companyId: String(company.companyId),
-                          companyName: company.name,
-                          branchName: company.branch,
-                        }));
+                        const companyName = merchantOptions.find((merchant) => merchant.id === nextMerchantId)?.name ?? "";
+                        setAdminForm((current) => ({ ...current, companyId: nextMerchantId, companyCode: nextMerchantId, companyName, branchCode: "", branchName: "" }));
+                        await loadBranchOptions(nextMerchantId);
                       }}
-                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
+                      disabled={isLoadingMerchantOptions || !merchantOptions.length}
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <option value="choose">Select a company</option>
-                      {existingMerchantOptions.map((merchant) => (
-                        <option key={merchant.companyId} value={merchant.companyId}>{merchant.name} | {merchant.branch}</option>
+                      <option value="choose">{isLoadingMerchantOptions ? "Loading companies..." : "Select a company"}</option>
+                      {merchantOptions.map((merchant) => (
+                        <option key={merchant.id} value={merchant.id}>{merchant.name}</option>
                       ))}
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch Name</label>
+                    <select
+                      value={adminForm.branchCode || "choose"}
+                      onChange={(event) => {
+                        const selectedBranchId = event.target.value;
+                        const selectedBranchName = branchOptions.find((b) => b.id === selectedBranchId)?.name ?? "";
+                        setAdminForm((current) => ({
+                          ...current,
+                          branchCode: selectedBranchId === "choose" ? "" : selectedBranchId,
+                          branchName: selectedBranchId === "choose" ? "" : selectedBranchName,
+                        }));
+                      }}
+                      disabled={isLoadingBranchOptions || !branchOptions.length}
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <option value="choose">{isLoadingBranchOptions ? "Loading branches..." : "Select a branch"}</option>
+                      {branchOptions.map((branch) => (
+                        <option key={branch.id} value={branch.id}>{branch.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {adminError && <div className="mt-4 rounded-[10px] bg-[#f9e8e8] px-3 py-2 text-sm text-[#8a2d2d]">{adminError}</div>}
+
+                <div className="mt-7 flex items-center gap-4">
+                  <button type="button" onClick={closeModal} className="h-[54px] flex-1 rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] text-[18px] font-semibold text-[#2d2a28]">
+                    Cancel
+                  </button>
+                  <button type="button" onClick={addAdminAccess} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
+                    {isCreatingAdmin ? "Creating..." : "Create"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeModal === "admin" && (
+              <>
+                <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Admin</h2>
+
+                <div className="space-y-5">
+                  <div className="rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 py-3">
+                    <div className="text-[12px] uppercase tracking-[0.08em] text-[#5d5653]">Company</div>
+                    <div className="mt-1 text-[18px] font-medium text-[#2b2826]">{adminForm.companyName || "—"}</div>
+                  </div>
+
+                  <div className="rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 py-3">
+                    <div className="text-[12px] uppercase tracking-[0.08em] text-[#5d5653]">Branch</div>
+                    <div className="mt-1 text-[18px] font-medium text-[#2b2826]">{adminForm.branchName || "—"}</div>
                   </div>
 
                   <div>
@@ -450,16 +713,7 @@ export default function WaiterManagement() {
                     <input
                       value={adminForm.fullName}
                       onChange={(event) => setAdminForm((current) => ({ ...current, fullName: event.target.value }))}
-                      placeholder="Admin full name"
-                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch Name</label>
-                    <input
-                      value={adminForm.branchName || ""}
-                      readOnly
+                      placeholder="Orit Samuel"
                       className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
                     />
                   </div>
@@ -467,9 +721,19 @@ export default function WaiterManagement() {
                   <div>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Phone Number</label>
                     <input
-                      value={adminForm.phone ?? ""}
+                      value={adminForm.phone}
                       onChange={(event) => setAdminForm((current) => ({ ...current, phone: event.target.value }))}
-                      placeholder="091212121212"
+                      placeholder="+251911822542"
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Remark</label>
+                    <input
+                      value={adminForm.remark}
+                      onChange={(event) => setAdminForm((current) => ({ ...current, remark: event.target.value }))}
+                      placeholder="Branch manager"
                       className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
                     />
                   </div>
@@ -481,7 +745,7 @@ export default function WaiterManagement() {
                   <button type="button" onClick={closeModal} className="h-[54px] flex-1 rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] text-[18px] font-semibold text-[#2d2a28]">
                     Cancel
                   </button>
-                  <button type="button" onClick={addAdminAccess} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
+                  <button type="button" onClick={createCompanyAdmin} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
                     {isCreatingAdmin ? "Creating..." : "Create"}
                   </button>
                 </div>

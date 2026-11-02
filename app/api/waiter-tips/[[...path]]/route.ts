@@ -4,19 +4,35 @@ const API_URL = process.env.HULUBEJE_API_BASE_URL ?? "https://v7-hulubeje.cnetco
 const BEARER_TOKEN = process.env.HULUBEJE_BEARER_TOKEN;
 const LOCAL_PREFIX = "/api/waiter-tips";
 
-function getUpstreamPath(request: Request, method: "GET" | "POST") {
-  const pathname = new URL(request.url).pathname;
-  if (!pathname.startsWith(`${LOCAL_PREFIX}/`)) return null;
+function getUpstreamPath(request: Request, method: "GET" | "POST" | "PUT") {
+  const { pathname, search } = new URL(request.url);
+  const validPaths = [
+    { method: "GET", path: LOCAL_PREFIX },
+    { method: "GET", path: `${LOCAL_PREFIX}/company` },
+    { method: "GET", path: `${LOCAL_PREFIX}/public` },
+    { method: "POST", path: `${LOCAL_PREFIX}/company` },
+    { method: "POST", path: `${LOCAL_PREFIX}/companies` },
+    { method: "PUT", path: `${LOCAL_PREFIX}/companies` },
+  ];
 
-  const endpoint = pathname.slice(LOCAL_PREFIX.length);
-  if (method === "GET" && endpoint === "/company") return endpoint;
-  if (method === "POST" && /^\/companies\/\d+\/admins$/.test(endpoint)) return endpoint;
+  const matches = validPaths.some(({ method: allowedMethod, path }) => pathname === path && method === allowedMethod);
+  if (matches) {
+    return `${pathname}${search}`;
+  }
+
+  const companyAdminMatch = /^\/api\/waiter-tips\/companies\/\d+\/admins$/.test(pathname) && method === "POST";
+  const companyActiveMatch = /^\/api\/waiter-tips\/companies\/\d+\/active$/.test(pathname) && method === "PUT";
+
+  if (companyAdminMatch || companyActiveMatch) {
+    return `${pathname}${search}`;
+  }
+
   return null;
 }
 
-async function forwardRequest(request: Request, method: "GET" | "POST") {
-  const endpoint = getUpstreamPath(request, method);
-  if (!endpoint) {
+async function forwardRequest(request: Request, method: "GET" | "POST" | "PUT") {
+  const upstreamUrl = getUpstreamPath(request, method);
+  if (!upstreamUrl) {
     return NextResponse.json({ message: "Waiter Tips endpoint not found." }, { status: 404 });
   }
 
@@ -28,13 +44,13 @@ async function forwardRequest(request: Request, method: "GET" | "POST") {
   }
 
   try {
-    const response = await fetch(`${API_URL}${LOCAL_PREFIX}${endpoint}`, {
+    const response = await fetch(`${API_URL}${upstreamUrl}`, {
       method,
       headers: {
         Authorization: `Bearer ${BEARER_TOKEN}`,
-        ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
+        ...(method !== "GET" ? { "Content-Type": "application/json" } : {}),
       },
-      ...(method === "POST" ? { body: await request.text() } : {}),
+      ...(method !== "GET" ? { body: await request.text() } : {}),
       cache: "no-store",
     });
     const responseText = await response.text();
@@ -52,10 +68,14 @@ async function forwardRequest(request: Request, method: "GET" | "POST") {
       return NextResponse.json(
         {
           message:
-            "The local proxy matched this request, but the Hulubeje API returned an empty 404 for /api/waiter-tips/company. Check that the endpoint is deployed and HULUBEJE_API_BASE_URL points to the correct API host.",
+            "The local proxy matched this request, but the Hulubeje API returned an empty 404 for /api/waiter-tips. Check that the endpoint is deployed and HULUBEJE_API_BASE_URL points to the correct API host.",
         },
         { status: 404 },
       );
+    }
+
+    if (response.status === 204) {
+      return new NextResponse(null, { status: 204 });
     }
 
     return NextResponse.json(payload, { status: response.status });
@@ -73,4 +93,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   return forwardRequest(request, "POST");
+}
+
+export async function PUT(request: Request) {
+  return forwardRequest(request, "PUT");
 }

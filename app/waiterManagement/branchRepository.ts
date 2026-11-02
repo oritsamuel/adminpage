@@ -21,29 +21,18 @@ type BranchDraft = {
 };
 
 const STORAGE_KEY = "waiterManagementMerchants";
-const TIPPING_APP_URL = "https://waiter-tip.hulubeje.com";
-const TOKEN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const TIPPING_APP_URL = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
 
-function createToken(existingTokens: Set<string>) {
-  let token = "";
-
-  do {
-    const randomValues = crypto.getRandomValues(new Uint8Array(8));
-    token = Array.from(randomValues, (value) => TOKEN_ALPHABET[value % TOKEN_ALPHABET.length]).join("");
-  } while (existingTokens.has(token));
-
-  existingTokens.add(token);
-  return token;
-}
-
-function createTippingUrl(token: string) {
-  return `${TIPPING_APP_URL}/r/${encodeURIComponent(token)}`;
+function buildTippingUrl(companyId: number | string, branchId: number | string) {
+  const url = new URL("/tip", TIPPING_APP_URL);
+  url.searchParams.set("companyId", String(companyId));
+  url.searchParams.set("branchId", String(branchId));
+  return url.toString();
 }
 
 function normalizeStoredBranches(value: unknown): BranchRecord[] {
   if (!Array.isArray(value)) return [];
 
-  const existingTokens = new Set<string>();
   const existingBranchIds = new Set<string>();
   const restaurantIds = new Map<string, string>();
 
@@ -64,11 +53,8 @@ function normalizeStoredBranches(value: unknown): BranchRecord[] {
     const branchId = savedBranchId && !existingBranchIds.has(savedBranchId) ? savedBranchId : crypto.randomUUID();
     existingBranchIds.add(branchId);
 
-    const savedToken = typeof record.token === "string" ? record.token : "";
-    const token = /^[A-Z0-9]{8}$/.test(savedToken) && !existingTokens.has(savedToken)
-      ? savedToken
-      : createToken(existingTokens);
-    existingTokens.add(token);
+    const companyId = typeof record.companyId === "number" ? record.companyId : Number.parseInt(branchId, 10) || 0;
+    const token = typeof record.token === "string" ? record.token : "";
 
     const phone = typeof record.phone === "string" ? record.phone : "";
     const adminList = Array.isArray(record.adminList)
@@ -76,12 +62,13 @@ function normalizeStoredBranches(value: unknown): BranchRecord[] {
       : phone ? [phone] : [];
 
     return [{
+      companyId: companyId || undefined,
       restaurantId,
       name,
       branchId,
       branch,
       token,
-      tippingUrl: createTippingUrl(token),
+      tippingUrl: buildTippingUrl(companyId || restaurantId, branchId),
       logo: typeof record.logo === "string" ? record.logo : undefined,
       admins: adminList.length || (typeof record.admins === "number" ? record.admins : 0),
       waiters: typeof record.waiters === "number" ? record.waiters : 0,
@@ -116,15 +103,19 @@ export function createMockBranch(draft: BranchDraft, existingBranches: BranchRec
   const existingRestaurant = existingBranches.find(
     (record) => record.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
   );
-  const token = createToken(new Set(existingBranches.map((record) => record.token)));
+  const nextCompanyId = Math.max(
+    0,
+    ...existingBranches.map((record) => (typeof record.companyId === "number" ? record.companyId : 0)),
+  ) + 1;
 
   return {
-    restaurantId: existingRestaurant?.restaurantId ?? crypto.randomUUID(),
+    companyId: nextCompanyId,
+    restaurantId: existingRestaurant?.restaurantId ?? String(nextCompanyId),
     name,
-    branchId: crypto.randomUUID(),
+    branchId: String(nextCompanyId),
     branch,
-    token,
-    tippingUrl: createTippingUrl(token),
+    token: "",
+    tippingUrl: buildTippingUrl(nextCompanyId, nextCompanyId),
     logo: draft.logo,
     admins: 0,
     waiters: 0,
