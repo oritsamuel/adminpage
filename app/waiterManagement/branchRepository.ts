@@ -58,7 +58,11 @@ function normalizeStoredBranches(value: unknown): BranchRecord[] {
     const branchId = savedBranchId && !existingBranchIds.has(savedBranchId) ? savedBranchId : crypto.randomUUID();
     existingBranchIds.add(branchId);
 
-    const companyId = typeof record.companyId === "number" ? record.companyId : Number.parseInt(branchId, 10) || 0;
+    const companyId = typeof record.companyId === "number"
+      ? record.companyId
+      : typeof record.companyId === "string" && record.companyId.trim() !== ""
+        ? Number.parseInt(record.companyId, 10) || 0
+        : Number.parseInt(branchId, 10) || 0;
     const token = typeof record.token === "string" ? record.token : "";
 
     const phone = typeof record.phone === "string" ? record.phone : "";

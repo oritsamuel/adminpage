@@ -61,9 +61,18 @@ function buildFrontEndTipUrl(companyId: number | string, branchId: number | stri
   return url.toString();
 }
 
+function normalizeNumericId(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 function mapCompanyDetail(value: unknown): BranchRecord {
   if (!value || typeof value !== "object") throw new Error("The company list contains an invalid item.");
-  const company = value as Partial<CompanyDetail>;
+  const company = value as Partial<CompanyDetail> & Record<string, unknown>;
   if (
     typeof company.id !== "number"
     || typeof company.companyName !== "string"
@@ -75,14 +84,17 @@ function mapCompanyDetail(value: unknown): BranchRecord {
     throw new Error("The company list returned an unexpected response.");
   }
 
+  const companyId = normalizeNumericId(company.companyId ?? company.id) ?? company.id;
+  const branchId = normalizeNumericId(company.branchId ?? company.id) ?? company.id;
+
   return {
-    companyId: company.id,
-    restaurantId: String(company.id),
+    companyId,
+    restaurantId: String(companyId),
     name: company.companyName,
-    branchId: String(company.id),
+    branchId: String(branchId),
     branch: company.branchName,
     token: "",
-    tippingUrl: buildFrontEndTipUrl(company.id, company.id),
+    tippingUrl: buildFrontEndTipUrl(companyId, branchId),
     admins: company.admins,
     waiters: company.waiters,
     status: company.status ? "Active" : "Inactive",
