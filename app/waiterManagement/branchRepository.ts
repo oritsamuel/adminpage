@@ -21,7 +21,12 @@ type BranchDraft = {
 };
 
 const STORAGE_KEY = "waiterManagementMerchants";
-const TIPPING_APP_URL = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
+const TIPPING_APP_URL = (
+  process.env.WAITER_APP_URL
+  ?? process.env.NEXT_PUBLIC_WAITER_APP_URL
+  ?? process.env.NEXT_PUBLIC_TIP_FRONTEND_URL
+  ?? "https://waiter-tip.hulubeje.com"
+).replace(/\/$/, "");
 
 function buildTippingUrl(companyId: number | string, branchId: number | string) {
   const url = new URL("/tip", TIPPING_APP_URL);

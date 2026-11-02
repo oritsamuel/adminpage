@@ -47,9 +47,15 @@ function getApiError(payload: unknown, fallback: string, status?: number) {
   return fallback;
 }
 
+function getWaiterAppBaseUrl() {
+  return (process.env.WAITER_APP_URL
+    ?? process.env.NEXT_PUBLIC_WAITER_APP_URL
+    ?? process.env.NEXT_PUBLIC_TIP_FRONTEND_URL
+    ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
+}
+
 function buildFrontEndTipUrl(companyId: number | string, branchId: number | string) {
-  const baseUrl = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
-  const url = new URL("/tip", baseUrl);
+  const url = new URL("/tip", getWaiterAppBaseUrl());
   url.searchParams.set("companyId", String(companyId));
   url.searchParams.set("branchId", String(branchId));
   return url.toString();
@@ -76,7 +82,7 @@ function mapCompanyDetail(value: unknown): BranchRecord {
     branchId: String(company.id),
     branch: company.branchName,
     token: "",
-    tippingUrl: "",
+    tippingUrl: buildFrontEndTipUrl(company.id, company.id),
     admins: company.admins,
     waiters: company.waiters,
     status: company.status ? "Active" : "Inactive",
@@ -169,6 +175,38 @@ export default function WaiterManagement() {
     return String(Math.floor(Math.random() * (maxCode - minCode + 1)) + minCode);
   }, []);
 
+  const loadBranchOptions = useCallback(async (merchantId: string) => {
+    if (!merchantId) {
+      setBranchOptions([]);
+      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+      return;
+    }
+    setIsLoadingBranchOptions(true);
+    try {
+      const response = await fetch(`/api/auth/merchants/${encodeURIComponent(merchantId)}/branches`, { cache: "no-store" });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(getApiError(payload, "Unable to load branch options.", response.status));
+      const nextOptions = extractOptionList(payload, "branch");
+      setBranchOptions(nextOptions);
+      const selectedBranch = nextOptions[0];
+      setAdminForm((current) => ({
+        ...current,
+        companyId: merchantId,
+        companyCode: merchantId,
+        companyName: merchantOptions.find((option) => option.id === merchantId)?.name ?? current.companyName,
+        branchCode: selectedBranch?.id ?? "",
+        branchName: selectedBranch?.name ?? "",
+      }));
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : "Unable to load branch options.";
+      setMerchantOptionsError(message);
+      setBranchOptions([]);
+      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+    } finally {
+      setIsLoadingBranchOptions(false);
+    }
+  }, [generateCompanyCode, merchantOptions]);
+
   const loadMerchantOptions = useCallback(async () => {
     setIsLoadingMerchantOptions(true);
     setMerchantOptionsError("");
@@ -202,39 +240,7 @@ export default function WaiterManagement() {
     } finally {
       setIsLoadingMerchantOptions(false);
     }
-  }, [generateCompanyCode]);
-
-  const loadBranchOptions = useCallback(async (merchantId: string) => {
-    if (!merchantId) {
-      setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
-      return;
-    }
-    setIsLoadingBranchOptions(true);
-    try {
-      const response = await fetch(`/api/auth/merchants/${encodeURIComponent(merchantId)}/branches`, { cache: "no-store" });
-      const payload: unknown = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(getApiError(payload, "Unable to load branch options.", response.status));
-      const nextOptions = extractOptionList(payload, "branch");
-      setBranchOptions(nextOptions);
-      const selectedBranch = nextOptions[0];
-      setAdminForm((current) => ({
-        ...current,
-        companyId: merchantId,
-        companyCode: merchantId,
-        companyName: merchantOptions.find((option) => option.id === merchantId)?.name ?? current.companyName,
-        branchCode: selectedBranch?.id ?? "",
-        branchName: selectedBranch?.name ?? "",
-      }));
-    } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : "Unable to load branch options.";
-      setMerchantOptionsError(message);
-      setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
-    } finally {
-      setIsLoadingBranchOptions(false);
-    }
-  }, [generateCompanyCode, merchantOptions]);
+  }, [loadBranchOptions]);
 
   const loadMerchants = useCallback(async () => {
     setIsLoadingMerchants(true);
@@ -372,6 +378,7 @@ export default function WaiterManagement() {
 
       const nextMerchant = mapCompanyDetail(createdCompany);
       nextMerchant.logo = logoPreview;
+      nextMerchant.tippingUrl = buildFrontEndTipUrl(nextMerchant.companyId ?? nextMerchant.restaurantId, nextMerchant.branchId);
 
       setMerchants((current) => [nextMerchant, ...current]);
       setSelectedMerchant(nextMerchant);
