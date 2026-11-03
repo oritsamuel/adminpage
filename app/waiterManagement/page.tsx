@@ -2,7 +2,7 @@
 
 import { QRCodeCanvas } from "qrcode.react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { type BranchRecord } from "./branchRepository";
+import { type BranchRecord, loadMockBranches, saveMockBranches } from "./branchRepository";
 
 type ModalType = "add" | "admin" | "qr" | "details" | null;
 
@@ -305,14 +305,34 @@ export default function WaiterManagement() {
     setIsLoadingMerchants(true);
     setMerchantLoadError("");
     try {
+      const persistedMerchants = loadMockBranches();
+      if (persistedMerchants.length) {
+        setMerchants(persistedMerchants);
+      }
+
       const response = await fetch("/api/waiter-tips/company", {
         cache: "no-store",
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) throw new Error(getApiError(payload, "Unable to load merchants.", response.status));
       if (!Array.isArray(payload)) throw new Error("The company list endpoint returned an unexpected response.");
-      setMerchants(payload.map(mapCompanyDetail));
+
+      const fetchedMerchants = payload.map(mapCompanyDetail);
+      const mergedMerchants = [...fetchedMerchants, ...persistedMerchants].reduce<BranchRecord[]>((accumulator, merchant) => {
+        const key = `${merchant.companyId ?? merchant.restaurantId}-${merchant.branchId}`;
+        if (!accumulator.some((item) => `${item.companyId ?? item.restaurantId}-${item.branchId}` === key)) {
+          accumulator.push(merchant);
+        }
+        return accumulator;
+      }, []);
+
+      setMerchants(mergedMerchants);
+      saveMockBranches(mergedMerchants);
     } catch (loadError) {
+      const persistedMerchants = loadMockBranches();
+      if (persistedMerchants.length) {
+        setMerchants(persistedMerchants);
+      }
       setMerchantLoadError(loadError instanceof Error ? loadError.message : "Unable to load merchants.");
     } finally {
       setIsLoadingMerchants(false);
@@ -320,6 +340,11 @@ export default function WaiterManagement() {
   }, []);
 
   useEffect(() => {
+    const persistedMerchants = loadMockBranches();
+    if (persistedMerchants.length) {
+      setMerchants(persistedMerchants);
+    }
+
     const timeoutId = window.setTimeout(() => void loadMerchants(), 0);
     return () => window.clearTimeout(timeoutId);
   }, [loadMerchants]);
@@ -451,7 +476,11 @@ export default function WaiterManagement() {
       nextMerchant.logo = logoPreview;
       nextMerchant.tippingUrl = buildFrontEndTipUrl(selectedCompanyId, selectedBranchId);
 
-      setMerchants((current) => [nextMerchant, ...current]);
+      setMerchants((current) => {
+        const merged = [nextMerchant, ...current];
+        saveMockBranches(merged);
+        return merged;
+      });
       setSelectedMerchant(nextMerchant);
       setQrGenerated(true);
       setQrError("");
