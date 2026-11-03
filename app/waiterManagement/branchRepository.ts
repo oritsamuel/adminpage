@@ -29,9 +29,15 @@ const TIPPING_APP_URL = (
 ).replace(/\/$/, "");
 
 function buildTippingUrl(companyId: number | string, branchId: number | string) {
+  const safeCompanyId = String(companyId ?? "").trim();
+  const safeBranchId = String(branchId ?? "").trim();
+  if (!safeCompanyId || !safeBranchId || safeCompanyId === "0" || safeBranchId === "0") {
+    return "";
+  }
+
   const url = new URL("/tip", TIPPING_APP_URL);
-  url.searchParams.set("companyId", String(companyId));
-  url.searchParams.set("branchId", String(branchId));
+  url.searchParams.set("companyId", safeCompanyId);
+  url.searchParams.set("branchId", safeBranchId);
   return url.toString();
 }
 
@@ -49,20 +55,30 @@ function normalizeStoredBranches(value: unknown): BranchRecord[] {
     const branch = typeof record.branch === "string" ? record.branch.trim() : "";
     if (!name || !branch) return [];
 
+    const companyIdValue = record.companyId ?? record.merchantId ?? record.company_id ?? record.merchant_id ?? record.id;
+    const branchIdValue = record.branchId ?? record.branch_id;
+
+    const companyId = typeof companyIdValue === "number"
+      ? companyIdValue
+      : typeof companyIdValue === "string" && companyIdValue.trim() !== ""
+        ? Number.parseInt(companyIdValue, 10) || 0
+        : 0;
+    const branchId = typeof branchIdValue === "string" && branchIdValue.trim() !== ""
+      ? branchIdValue
+      : typeof branchIdValue === "number" && Number.isFinite(branchIdValue)
+        ? String(branchIdValue)
+        : "";
+
+    if (!companyId || !branchId || companyId === 0 || branchId === "0") return [];
+
     const restaurantKey = name.toLocaleLowerCase();
     const savedRestaurantId = typeof record.restaurantId === "string" ? record.restaurantId : "";
-    const restaurantId = savedRestaurantId || restaurantIds.get(restaurantKey) || crypto.randomUUID();
+    const restaurantId = savedRestaurantId || restaurantIds.get(restaurantKey) || String(companyId);
     restaurantIds.set(restaurantKey, restaurantId);
 
-    const savedBranchId = typeof record.branchId === "string" ? record.branchId : "";
-    const branchId = savedBranchId && !existingBranchIds.has(savedBranchId) ? savedBranchId : crypto.randomUUID();
+    if (existingBranchIds.has(branchId)) return [];
     existingBranchIds.add(branchId);
 
-    const companyId = typeof record.companyId === "number"
-      ? record.companyId
-      : typeof record.companyId === "string" && record.companyId.trim() !== ""
-        ? Number.parseInt(record.companyId, 10) || 0
-        : Number.parseInt(branchId, 10) || 0;
     const token = typeof record.token === "string" ? record.token : "";
 
     const phone = typeof record.phone === "string" ? record.phone : "";
@@ -112,19 +128,18 @@ export function createMockBranch(draft: BranchDraft, existingBranches: BranchRec
   const existingRestaurant = existingBranches.find(
     (record) => record.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
   );
-  const nextCompanyId = Math.max(
-    0,
-    ...existingBranches.map((record) => (typeof record.companyId === "number" ? record.companyId : 0)),
-  ) + 1;
+
+  const companyId = existingRestaurant?.companyId;
+  const branchId = existingRestaurant?.branchId ?? "";
 
   return {
-    companyId: nextCompanyId,
-    restaurantId: existingRestaurant?.restaurantId ?? String(nextCompanyId),
+    companyId,
+    restaurantId: existingRestaurant?.restaurantId ?? "",
     name,
-    branchId: String(nextCompanyId),
+    branchId,
     branch,
     token: "",
-    tippingUrl: buildTippingUrl(nextCompanyId, nextCompanyId),
+    tippingUrl: companyId !== undefined && branchId ? buildTippingUrl(companyId, branchId) : "",
     logo: draft.logo,
     admins: 0,
     waiters: 0,

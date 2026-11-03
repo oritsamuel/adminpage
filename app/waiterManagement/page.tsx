@@ -7,12 +7,16 @@ import { type BranchRecord } from "./branchRepository";
 type ModalType = "add" | "admin" | "qr" | "details" | null;
 
 type MerchantForm = {
+  companyId: string;
   companyName: string;
+  branchId: string;
   branchName: string;
 };
 
 type CompanyDetail = {
   id: number;
+  companyCode?: number;
+  branchCode?: number;
   companyName: string;
   branchName: string;
   status: boolean;
@@ -47,35 +51,46 @@ function getApiError(payload: unknown, fallback: string, status?: number) {
   return fallback;
 }
 
-function getWaiterAppBaseUrl() {
-  return (process.env.WAITER_APP_URL
-    ?? process.env.NEXT_PUBLIC_WAITER_APP_URL
-    ?? process.env.NEXT_PUBLIC_TIP_FRONTEND_URL
-    ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
-}
-
 function buildFrontEndTipUrl(companyId: number | string, branchId: number | string) {
-  const url = new URL("/tip", getWaiterAppBaseUrl());
+  const baseUrl = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
+  const url = new URL("/tip", baseUrl);
   url.searchParams.set("companyId", String(companyId));
   url.searchParams.set("branchId", String(branchId));
   return url.toString();
 }
 
-function normalizeNumericId(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+function getPositiveNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
   if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isFinite(parsed)) return parsed;
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return num;
   }
   return undefined;
+}
+
+function resolveTipIds(company: Partial<CompanyDetail> & Record<string, unknown>) {
+  const companyId =
+    getPositiveNumber(company.companyId)
+    ?? getPositiveNumber(company.companyCode)
+    ?? getPositiveNumber(company.company_id)
+    ?? getPositiveNumber(company.id);
+  const branchId =
+    getPositiveNumber(company.branchId)
+    ?? getPositiveNumber(company.branchCode)
+    ?? getPositiveNumber(company.branch_id)
+    ?? getPositiveNumber(company.id);
+
+  return {
+    companyId: companyId ?? 0,
+    branchId: branchId ?? 0,
+  };
 }
 
 function mapCompanyDetail(value: unknown): BranchRecord {
   if (!value || typeof value !== "object") throw new Error("The company list contains an invalid item.");
   const company = value as Partial<CompanyDetail> & Record<string, unknown>;
   if (
-    typeof company.id !== "number"
-    || typeof company.companyName !== "string"
+    typeof company.companyName !== "string"
     || typeof company.branchName !== "string"
     || typeof company.status !== "boolean"
     || typeof company.admins !== "number"
@@ -84,17 +99,23 @@ function mapCompanyDetail(value: unknown): BranchRecord {
     throw new Error("The company list returned an unexpected response.");
   }
 
-  const companyId = normalizeNumericId(company.companyId ?? company.id) ?? company.id;
-  const branchId = normalizeNumericId(company.branchId ?? company.id) ?? company.id;
+  const numericId = typeof company.id === "number" ? company.id : Number(company.id ?? "");
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    throw new Error("The company list returned an unexpected response.");
+  }
+
+  const tipIds = resolveTipIds(company);
+  const safeCompanyId = tipIds.companyId > 0 ? tipIds.companyId : numericId;
+  const safeBranchId = tipIds.branchId > 0 ? tipIds.branchId : numericId;
 
   return {
-    companyId,
-    restaurantId: String(companyId),
+    companyId: numericId,
+    restaurantId: String(safeCompanyId),
     name: company.companyName,
-    branchId: String(branchId),
+    branchId: String(safeBranchId),
     branch: company.branchName,
     token: "",
-    tippingUrl: buildFrontEndTipUrl(companyId, branchId),
+    tippingUrl: buildFrontEndTipUrl(safeCompanyId, safeBranchId),
     admins: company.admins,
     waiters: company.waiters,
     status: company.status ? "Active" : "Inactive",
@@ -164,8 +185,17 @@ function QrDisplay({ value, id, logo }: { value: string; id: string; logo?: stri
 export default function WaiterManagement() {
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [selectedMerchant, setSelectedMerchant] = useState<BranchRecord | null>(null);
-  const [merchantForm, setMerchantForm] = useState<MerchantForm>({ companyName: "", branchName: "" });
-  const [adminForm, setAdminForm] = useState({ companyId: "", companyCode: "", branchCode: "", companyName: "", branchName: "", fullName: "", phone: "", remark: "" });
+  const [merchantForm, setMerchantForm] = useState<MerchantForm>({ companyId: "", companyName: "", branchId: "", branchName: "" });
+  const [adminForm, setAdminForm] = useState({
+    companyId: "",
+    companyCode: "",
+    branchCode: "",
+    companyName: "",
+    branchName: "",
+    fullName: "",
+    phone: "",
+    remark: "",
+  });
   const [logoPreview, setLogoPreview] = useState("");
   const [logoFileName, setLogoFileName] = useState("");
   const [qrGenerated, setQrGenerated] = useState(false);
@@ -190,7 +220,7 @@ export default function WaiterManagement() {
   const loadBranchOptions = useCallback(async (merchantId: string) => {
     if (!merchantId) {
       setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+      setAdminForm((current) => ({ ...current, branchCode: generateCompanyCode(), branchName: "" }));
       return;
     }
     setIsLoadingBranchOptions(true);
@@ -204,16 +234,23 @@ export default function WaiterManagement() {
       setAdminForm((current) => ({
         ...current,
         companyId: merchantId,
-        companyCode: merchantId,
+        companyCode: current.companyCode || generateCompanyCode(),
         companyName: merchantOptions.find((option) => option.id === merchantId)?.name ?? current.companyName,
-        branchCode: selectedBranch?.id ?? "",
+        branchCode: current.branchCode || generateCompanyCode(),
+        branchName: selectedBranch?.name ?? "",
+      }));
+      setMerchantForm((current) => ({
+        ...current,
+        companyId: merchantId,
+        companyName: merchantOptions.find((option) => option.id === merchantId)?.name ?? current.companyName,
+        branchId: selectedBranch?.id ?? "",
         branchName: selectedBranch?.name ?? "",
       }));
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Unable to load branch options.";
       setMerchantOptionsError(message);
       setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+      setAdminForm((current) => ({ ...current, branchCode: generateCompanyCode(), branchName: "" }));
     } finally {
       setIsLoadingBranchOptions(false);
     }
@@ -230,16 +267,24 @@ export default function WaiterManagement() {
       setMerchantOptions(nextOptions);
       if (!nextOptions.length) {
         setBranchOptions([]);
-        setAdminForm((current) => ({ ...current, companyId: "", companyCode: "", companyName: "", branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+        setAdminForm((current) => ({ ...current, companyId: "", companyCode: generateCompanyCode(), companyName: "", branchCode: generateCompanyCode(), branchName: "" }));
+        setMerchantForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
         return;
       }
       const firstMerchant = nextOptions[0];
       setAdminForm((current) => ({
         ...current,
         companyId: firstMerchant.id,
-        companyCode: firstMerchant.id,
+        companyCode: current.companyCode || generateCompanyCode(),
         companyName: firstMerchant.name,
-        branchCode: "",
+        branchCode: current.branchCode || generateCompanyCode(),
+        branchName: "",
+      }));
+      setMerchantForm((current) => ({
+        ...current,
+        companyId: firstMerchant.id,
+        companyName: firstMerchant.name,
+        branchId: "",
         branchName: "",
       }));
       await loadBranchOptions(firstMerchant.id);
@@ -248,11 +293,13 @@ export default function WaiterManagement() {
       setMerchantOptionsError(message);
       setMerchantOptions([]);
       setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, companyId: "", companyCode: "", companyName: "", branchCode: "", branchName: "", fullName: "", phone: "", remark: "" }));
+      setAdminForm((current) => ({ ...current, companyId: "", companyCode: generateCompanyCode(), companyName: "", branchCode: generateCompanyCode(), branchName: "" }));
+      setMerchantForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
     } finally {
       setIsLoadingMerchantOptions(false);
     }
-  }, [loadBranchOptions]);
+  }, [generateCompanyCode, loadBranchOptions]);
+
 
   const loadMerchants = useCallback(async () => {
     setIsLoadingMerchants(true);
@@ -287,8 +334,8 @@ export default function WaiterManagement() {
     setActiveModal("add");
     setAdminForm({
       companyId: "",
-      companyCode: "",
-      branchCode: "",
+      companyCode: generateCompanyCode(),
+      branchCode: generateCompanyCode(),
       companyName: "",
       branchName: "",
       fullName: "",
@@ -298,13 +345,14 @@ export default function WaiterManagement() {
     await loadMerchantOptions();
   };
 
-  const openGenerateQr = () => {
+  const openGenerateQr = async () => {
     setQrError("");
     setQrGenerated(false);
     setLogoPreview("");
     setLogoFileName("");
-    setMerchantForm({ companyName: "", branchName: "" });
+    setMerchantForm({ companyId: "", companyName: "", branchId: "", branchName: "" });
     setActiveModal("qr");
+    await loadMerchantOptions();
   };
 
   const handleLogoUpload = (event: ChangeEvent<HTMLInputElement>) => {
@@ -337,14 +385,25 @@ export default function WaiterManagement() {
     setQrGenerated(false);
     setLogoPreview("");
     setLogoFileName("");
+    setMerchantForm({ companyId: "", companyName: "", branchId: "", branchName: "" });
   };
 
   const saveMerchant = async () => {
     const cleanCompanyName = (merchantForm.companyName ?? "").trim();
     const cleanBranchName = (merchantForm.branchName ?? "").trim();
+    const selectedCompanyId = Number(merchantForm.companyId || "");
+    const selectedBranchId = Number(merchantForm.branchId || "");
 
     if (!cleanCompanyName || !cleanBranchName) {
-      setQrError("Please enter both the company name and branch name.");
+      setQrError("Please choose both the company and branch from the dropdowns.");
+      return;
+    }
+    if (!Number.isFinite(selectedCompanyId) || selectedCompanyId <= 0) {
+      setQrError("Please select a valid company before generating the QR code.");
+      return;
+    }
+    if (!Number.isFinite(selectedBranchId) || selectedBranchId <= 0) {
+      setQrError("Please select a valid branch before generating the QR code.");
       return;
     }
     if (!logoPreview) {
@@ -361,19 +420,13 @@ export default function WaiterManagement() {
       return;
     }
 
-    const nextCompanyCode = merchants.reduce((maxCode, merchant) => {
-      const knownCode = typeof merchant.companyId === "number" ? merchant.companyId : 0;
-      return Math.max(maxCode, knownCode);
-    }, 0) + 1;
-    const nextBranchCode = 1;
-
     try {
       const response = await fetch("/api/waiter-tips/company", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          companyCode: nextCompanyCode,
-          branchCode: nextBranchCode,
+          companyCode: selectedCompanyId,
+          branchCode: selectedBranchId,
           companyName: cleanCompanyName,
           branchName: cleanBranchName,
         }),
@@ -383,14 +436,20 @@ export default function WaiterManagement() {
         throw new Error(getApiError(payload, "Unable to create the merchant company.", response.status));
       }
 
-      const createdCompany = payload && typeof payload === "object" ? payload as Partial<CompanyDetail> : null;
-      if (!createdCompany || typeof createdCompany.id !== "number") {
+      const createdCompany = payload && typeof payload === "object" ? payload as Partial<CompanyDetail> & Record<string, unknown> : null;
+      if (!createdCompany || typeof createdCompany.companyName !== "string" || typeof createdCompany.branchName !== "string") {
         throw new Error("The company creation endpoint returned an unexpected response.");
       }
 
-      const nextMerchant = mapCompanyDetail(createdCompany);
+      const nextMerchant = mapCompanyDetail({
+        ...createdCompany,
+        companyId: selectedCompanyId,
+        companyCode: selectedCompanyId,
+        branchId: selectedBranchId,
+        branchCode: selectedBranchId,
+      });
       nextMerchant.logo = logoPreview;
-      nextMerchant.tippingUrl = buildFrontEndTipUrl(nextMerchant.companyId ?? nextMerchant.restaurantId, nextMerchant.branchId);
+      nextMerchant.tippingUrl = buildFrontEndTipUrl(selectedCompanyId, selectedBranchId);
 
       setMerchants((current) => [nextMerchant, ...current]);
       setSelectedMerchant(nextMerchant);
@@ -402,8 +461,8 @@ export default function WaiterManagement() {
     }
   };
 
-  const addAdminAccess = async () => {
-    const companyCode = Number(adminForm.companyId);
+  const addCompanyAccess = async () => {
+    const companyCode = Number(adminForm.companyCode);
     const branchCode = Number(adminForm.branchCode);
     const cleanCompany = adminForm.companyName.trim();
     const cleanBranch = adminForm.branchName.trim();
@@ -414,12 +473,12 @@ export default function WaiterManagement() {
     }
 
     if (!Number.isInteger(companyCode) || companyCode <= 0) {
-      setAdminError("Please select a valid company from the dropdown.");
+      setAdminError("Company code is missing or invalid. Please generate a new code.");
       return;
     }
 
     if (!Number.isInteger(branchCode) || branchCode <= 0) {
-      setAdminError("Please select a valid branch from the dropdown.");
+      setAdminError("Branch code is missing or invalid. Please generate a new code.");
       return;
     }
 
@@ -438,19 +497,9 @@ export default function WaiterManagement() {
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) throw new Error(getApiError(payload, "Unable to add company.", response.status));
 
-      const tippingUrl = buildFrontEndTipUrl(companyCode, branchCode);
-
       setAdminError("");
       closeModal();
-      await loadMerchants();
-
-      setMerchants((current) =>
-        current.map((merchant) =>
-          merchant.name === cleanCompany && merchant.branch === cleanBranch && !merchant.tippingUrl
-            ? { ...merchant, tippingUrl }
-            : merchant,
-        ),
-      );
+      void loadMerchants();
     } catch (createError) {
       setAdminError(createError instanceof Error ? createError.message : "Unable to add company.");
     } finally {
@@ -458,34 +507,19 @@ export default function WaiterManagement() {
     }
   };
 
-  const openAddAdminForMerchant = (merchant: BranchRecord) => {
-    setAdminError("");
-    setActiveModal("admin");
-    setAdminForm({
-      companyId: merchant.companyId === undefined ? "" : String(merchant.companyId),
-      companyCode: "",
-      branchCode: "",
-      companyName: merchant.name,
-      branchName: merchant.branch,
-      fullName: "",
-      phone: "",
-      remark: "",
-    });
-  };
-
-  const createCompanyAdmin = async () => {
-    const companyId = Number(adminForm.companyId);
+  const addAdminRowAccess = async (merchant: BranchRecord) => {
+    const companyId = merchant.companyId ?? Number(merchant.restaurantId);
     const fullName = adminForm.fullName.trim();
     const phone = adminForm.phone.trim();
     const remark = adminForm.remark.trim();
 
     if (!Number.isInteger(companyId) || companyId <= 0) {
-      setAdminError("Please select a valid company.");
+      setAdminError("Please select a valid company before adding an admin.");
       return;
     }
 
     if (!fullName || !phone) {
-      setAdminError("Please enter the admin full name and phone number.");
+      setAdminError("Please enter the admin's full name and phone number.");
       return;
     }
 
@@ -501,6 +535,17 @@ export default function WaiterManagement() {
 
       setAdminError("");
       closeModal();
+      if (merchant.companyId !== undefined) {
+        setMerchants((current) => current.map((item) => {
+          if (item.companyId !== merchant.companyId) return item;
+          return {
+            ...item,
+            admins: item.admins + 1,
+            phone: phone || item.phone,
+            adminList: [...item.adminList, phone],
+          };
+        }));
+      }
       void loadMerchants();
     } catch (createError) {
       setAdminError(createError instanceof Error ? createError.message : "Unable to add admin.");
@@ -524,6 +569,22 @@ export default function WaiterManagement() {
     setActiveModal("details");
   };
 
+  const openAdminModal = (merchant: BranchRecord) => {
+    setSelectedMerchant(merchant);
+    setAdminError("");
+    setActiveModal("admin");
+    setAdminForm({
+      companyId: merchant.companyId !== undefined ? String(merchant.companyId) : "",
+      companyCode: "",
+      branchCode: "",
+      companyName: merchant.name,
+      branchName: merchant.branch,
+      fullName: "",
+      phone: "",
+      remark: "",
+    });
+  };
+
   return (
     <main className="min-h-screen bg-[#f3f2f1] px-4 pb-6 pt-[92px] text-[#2d2a28] md:ml-60 md:px-8 lg:px-12">
       <div className="mx-auto max-w-[1440px]">
@@ -538,16 +599,7 @@ export default function WaiterManagement() {
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={openAddAdminAccess}
-              className="inline-flex items-center gap-2 rounded-[14px] border border-[#d5d0cc] bg-[#f7f3f1] px-5 py-3 text-[17px] font-medium text-[#2d2a28] shadow-[0_1px_0_rgba(0,0,0,0.03)] transition hover:bg-[#f0ecea]"
-            >
-              <span className="text-[19px] leading-none">＋</span>
-              Add Company
-            </button>
-
-            <button
-              type="button"
-              onClick={openGenerateQr}
+              onClick={() => void openGenerateQr()}
               className="inline-flex items-center gap-2 rounded-[14px] bg-[#6b1b3d] px-5 py-3 text-[17px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] transition hover:bg-[#58152f]"
             >
               <span className="text-[18px] leading-none">◫</span>
@@ -622,7 +674,7 @@ export default function WaiterManagement() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => openAddAdminForMerchant(merchant)}
+                          onClick={() => openAdminModal(merchant)}
                           className="rounded-[12px] border border-[#f0c399] bg-[#fff3e8] px-4 py-2 text-[15px] font-medium text-[#d5782a] transition hover:bg-[#fbe8d4]"
                         >
                           Add Admin
@@ -641,7 +693,7 @@ export default function WaiterManagement() {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#000000]/20 p-4"
           onClick={(event) => {
-            if (event.target === event.currentTarget) closeModal();
+            if (event.target === event.currentTarget && activeModal !== "qr") closeModal();
           }}
         >
           <div className="max-h-[90vh] w-full max-w-[520px] overflow-y-auto rounded-[18px] border border-[#ded8d5] bg-[#f3f0ee] p-5 shadow-[0_20px_60px_rgba(10,10,12,0.18)]">
@@ -657,12 +709,12 @@ export default function WaiterManagement() {
                       onChange={async (event) => {
                         const nextMerchantId = event.target.value;
                         if (!nextMerchantId || nextMerchantId === "choose") {
-                          setAdminForm((current) => ({ ...current, companyId: "", companyCode: "", companyName: "", branchCode: "", branchName: "" }));
+                          setAdminForm((current) => ({ ...current, companyId: "", companyCode: generateCompanyCode(), companyName: "", branchCode: generateCompanyCode(), branchName: "" }));
                           setBranchOptions([]);
                           return;
                         }
                         const companyName = merchantOptions.find((merchant) => merchant.id === nextMerchantId)?.name ?? "";
-                        setAdminForm((current) => ({ ...current, companyId: nextMerchantId, companyCode: nextMerchantId, companyName, branchCode: "", branchName: "" }));
+                        setAdminForm((current) => ({ ...current, companyId: nextMerchantId, companyCode: current.companyCode || generateCompanyCode(), companyName, branchCode: current.branchCode || generateCompanyCode(), branchName: "" }));
                         await loadBranchOptions(nextMerchantId);
                       }}
                       disabled={isLoadingMerchantOptions || !merchantOptions.length}
@@ -678,24 +730,38 @@ export default function WaiterManagement() {
                   <div>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch Name</label>
                     <select
-                      value={adminForm.branchCode || "choose"}
-                      onChange={(event) => {
-                        const selectedBranchId = event.target.value;
-                        const selectedBranchName = branchOptions.find((b) => b.id === selectedBranchId)?.name ?? "";
-                        setAdminForm((current) => ({
-                          ...current,
-                          branchCode: selectedBranchId === "choose" ? "" : selectedBranchId,
-                          branchName: selectedBranchId === "choose" ? "" : selectedBranchName,
-                        }));
-                      }}
+                      value={adminForm.branchName || "choose"}
+                      onChange={(event) => setAdminForm((current) => ({
+                        ...current,
+                        branchCode: current.branchCode || generateCompanyCode(),
+                        branchName: event.target.value === "choose" ? "" : event.target.value,
+                      }))}
                       disabled={isLoadingBranchOptions || !branchOptions.length}
                       className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <option value="choose">{isLoadingBranchOptions ? "Loading branches..." : "Select a branch"}</option>
                       {branchOptions.map((branch) => (
-                        <option key={branch.id} value={branch.id}>{branch.name}</option>
+                        <option key={branch.id} value={branch.name}>{branch.name}</option>
                       ))}
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Code</label>
+                    <input
+                      value={adminForm.companyCode || ""}
+                      readOnly
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch Code</label>
+                    <input
+                      value={adminForm.branchCode || ""}
+                      readOnly
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
+                    />
                   </div>
                 </div>
 
@@ -705,32 +771,31 @@ export default function WaiterManagement() {
                   <button type="button" onClick={closeModal} className="h-[54px] flex-1 rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] text-[18px] font-semibold text-[#2d2a28]">
                     Cancel
                   </button>
-                  <button type="button" onClick={addAdminAccess} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
+                  <button type="button" onClick={addCompanyAccess} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
                     {isCreatingAdmin ? "Creating..." : "Create"}
                   </button>
                 </div>
               </>
             )}
 
-            {activeModal === "admin" && (
+            {activeModal === "admin" && selectedMerchant && (
               <>
                 <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Admin</h2>
 
                 <div className="space-y-5">
-                  <div className="rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 py-3">
-                    <div className="text-[12px] uppercase tracking-[0.08em] text-[#5d5653]">Company</div>
-                    <div className="mt-1 text-[18px] font-medium text-[#2b2826]">{adminForm.companyName || "—"}</div>
-                  </div>
-
-                  <div className="rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 py-3">
-                    <div className="text-[12px] uppercase tracking-[0.08em] text-[#5d5653]">Branch</div>
-                    <div className="mt-1 text-[18px] font-medium text-[#2b2826]">{adminForm.branchName || "—"}</div>
+                  <div>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company</label>
+                    <input
+                      value={`${selectedMerchant.name} | ${selectedMerchant.branch}`}
+                      readOnly
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
+                    />
                   </div>
 
                   <div>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Full Name</label>
                     <input
-                      value={adminForm.fullName}
+                      value={adminForm.fullName || ""}
                       onChange={(event) => setAdminForm((current) => ({ ...current, fullName: event.target.value }))}
                       placeholder="Orit Samuel"
                       className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
@@ -738,9 +803,9 @@ export default function WaiterManagement() {
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Phone Number</label>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Phone</label>
                     <input
-                      value={adminForm.phone}
+                      value={adminForm.phone || ""}
                       onChange={(event) => setAdminForm((current) => ({ ...current, phone: event.target.value }))}
                       placeholder="+251911822542"
                       className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
@@ -750,7 +815,7 @@ export default function WaiterManagement() {
                   <div>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Remark</label>
                     <input
-                      value={adminForm.remark}
+                      value={adminForm.remark || ""}
                       onChange={(event) => setAdminForm((current) => ({ ...current, remark: event.target.value }))}
                       placeholder="Branch manager"
                       className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
@@ -764,7 +829,7 @@ export default function WaiterManagement() {
                   <button type="button" onClick={closeModal} className="h-[54px] flex-1 rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] text-[18px] font-semibold text-[#2d2a28]">
                     Cancel
                   </button>
-                  <button type="button" onClick={createCompanyAdmin} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
+                  <button type="button" onClick={() => addAdminRowAccess(selectedMerchant)} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
                     {isCreatingAdmin ? "Creating..." : "Create"}
                   </button>
                 </div>
@@ -780,20 +845,56 @@ export default function WaiterManagement() {
                     <div className="space-y-5">
                       <div>
                         <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Name</label>
-                        <input
-                          value={merchantForm.companyName || ""}
-                          onChange={(event) => setMerchantForm((current) => ({ ...current, companyName: event.target.value }))}
-                          className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
-                        />
+                        <select
+                          value={merchantForm.companyId || "choose"}
+                          onChange={async (event) => {
+                            const nextCompanyId = event.target.value;
+                            if (!nextCompanyId || nextCompanyId === "choose") {
+                              setMerchantForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
+                              setBranchOptions([]);
+                              return;
+                            }
+                            const nextCompanyName = merchantOptions.find((merchant) => merchant.id === nextCompanyId)?.name ?? "";
+                            setMerchantForm((current) => ({
+                              ...current,
+                              companyId: nextCompanyId,
+                              companyName: nextCompanyName,
+                              branchId: "",
+                              branchName: "",
+                            }));
+                            await loadBranchOptions(nextCompanyId);
+                          }}
+                          disabled={isLoadingMerchantOptions || !merchantOptions.length}
+                          className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <option value="choose">{isLoadingMerchantOptions ? "Loading companies..." : "Select a company"}</option>
+                          {merchantOptions.map((merchant) => (
+                            <option key={merchant.id} value={merchant.id}>{merchant.name}</option>
+                          ))}
+                        </select>
                       </div>
 
                       <div>
                         <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch</label>
-                        <input
-                          value={merchantForm.branchName || ""}
-                          onChange={(event) => setMerchantForm((current) => ({ ...current, branchName: event.target.value }))}
-                          className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
-                        />
+                        <select
+                          value={merchantForm.branchId || "choose"}
+                          onChange={(event) => {
+                            const nextBranchId = event.target.value;
+                            const nextBranchName = branchOptions.find((branch) => branch.id === nextBranchId)?.name ?? "";
+                            setMerchantForm((current) => ({
+                              ...current,
+                              branchId: nextBranchId === "choose" ? "" : nextBranchId,
+                              branchName: nextBranchId === "choose" ? "" : nextBranchName,
+                            }));
+                          }}
+                          disabled={isLoadingBranchOptions || !branchOptions.length}
+                          className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <option value="choose">{isLoadingBranchOptions ? "Loading branches..." : "Select a branch"}</option>
+                          {branchOptions.map((branch) => (
+                            <option key={branch.id} value={branch.id}>{branch.name}</option>
+                          ))}
+                        </select>
                       </div>
 
                       <div>

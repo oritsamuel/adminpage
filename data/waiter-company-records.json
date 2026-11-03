@@ -1,0 +1,92 @@
+{
+  "15": {
+    "id": 15,
+    "companyCode": 25,
+    "branchCode": 46057,
+    "companyName": "Wow Burger",
+    "branchName": "Betemengst Parking Branch",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "16": {
+    "id": 16,
+    "companyCode": 1246,
+    "branchCode": 42168,
+    "companyName": "Yod Abyssinia Cultural Restaurant And Hotel",
+    "branchName": "Yod Abyssinia Hotel",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "17": {
+    "id": 17,
+    "companyCode": 1289,
+    "branchCode": 42292,
+    "companyName": "Chaka Buna",
+    "branchName": "Bole Morningstar Branch",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "18": {
+    "id": 18,
+    "companyCode": 1289,
+    "branchCode": 67981,
+    "companyName": "Chaka Buna",
+    "branchName": "Yechaka Bunna Abyssinia Branch",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "19": {
+    "id": 19,
+    "companyCode": 44587,
+    "branchCode": 43216,
+    "companyName": "Dink Donut",
+    "branchName": "Stadium Branch",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "20": {
+    "id": 20,
+    "companyCode": 44473,
+    "branchCode": 42810,
+    "companyName": "Kersay Hotel",
+    "branchName": "Kersay Hotel",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "21": {
+    "id": 21,
+    "companyCode": 425,
+    "branchCode": 42385,
+    "companyName": "Mulmul Bakery",
+    "branchName": "22 Branch",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "1246": {
+    "id": 1246,
+    "companyCode": 1246,
+    "branchCode": 42168,
+    "companyName": "Yod Abyssinia Cultural Restaurant And Hotel",
+    "branchName": "Yod Abyssinia Hotel",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  },
+  "1289": {
+    "id": 1289,
+    "companyCode": 1289,
+    "branchCode": 67981,
+    "companyName": "Chaka Buna",
+    "branchName": "Yechaka Bunna Abyssinia Branch",
+    "status": true,
+    "admins": 0,
+    "waiters": 0
+  }
+}

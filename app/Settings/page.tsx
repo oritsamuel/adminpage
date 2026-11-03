@@ -57,8 +57,9 @@ export default function SettingsPage() {
             return;
         }
 
+        const deterministicId = normalizeName(name).replace(/\s+/g, "-");
         setAccounts((existing) => [...existing, {
-            id: crypto.randomUUID(),
+            id: deterministicId,
             name: name.trim(),
             password: defaultFirstLoginPassword,
             role: "Viewer",
