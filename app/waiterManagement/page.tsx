@@ -52,7 +52,7 @@ function getApiError(payload: unknown, fallback: string, status?: number) {
 }
 
 function buildFrontEndTipUrl(companyId: number | string, branchId: number | string) {
-  const baseUrl = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiter-tip.hulubeje.com").replace(/\/$/, "");
+  const baseUrl = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiters-tip.vercel.app/").replace(/\/$/, "");
   const url = new URL("/tip", baseUrl);
   url.searchParams.set("companyId", String(companyId));
   url.searchParams.set("branchId", String(branchId));

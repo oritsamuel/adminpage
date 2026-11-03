@@ -25,7 +25,7 @@ const TIPPING_APP_URL = (
   process.env.WAITER_APP_URL
   ?? process.env.NEXT_PUBLIC_WAITER_APP_URL
   ?? process.env.NEXT_PUBLIC_TIP_FRONTEND_URL
-  ?? "https://waiter-tip.hulubeje.com"
+  ?? "https://waiters-tip.vercel.app/"
 ).replace(/\/$/, "");
 
 function buildTippingUrl(companyId: number | string, branchId: number | string) {
