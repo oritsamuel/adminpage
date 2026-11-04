@@ -20,10 +20,11 @@ function getUpstreamPath(request: Request, method: "GET" | "POST" | "PUT") {
     return `${pathname}${search}`;
   }
 
-  const companyAdminMatch = /^\/api\/waiter-tips\/companies\/\d+\/admins$/.test(pathname) && method === "POST";
+  const companyAdminMatch = /^\/api\/waiter-tips\/companies\/\d+\/admins$/.test(pathname) && (method === "GET" || method === "POST");
   const companyActiveMatch = /^\/api\/waiter-tips\/companies\/\d+\/active$/.test(pathname) && method === "PUT";
+  const adminActionMatch = /^\/api\/waiter-tips\/\d+\/\d+\/(terminate|activate)$/.test(pathname) && (method === "POST" || method === "PUT");
 
-  if (companyAdminMatch || companyActiveMatch) {
+  if (companyAdminMatch || companyActiveMatch || adminActionMatch) {
     return `${pathname}${search}`;
   }
 

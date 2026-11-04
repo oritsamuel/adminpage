@@ -1,8 +1,8 @@
 "use client";
 
 import { QRCodeCanvas } from "qrcode.react";
-import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { type BranchRecord, loadMockBranches, saveMockBranches } from "./branchRepository";
+import { type ChangeEvent, useCallback, useEffect, useState } from "react";
+import { type AdminListItem, type AdminStatusMap, type BranchRecord, buildTippingUrl } from "./branchRepository";
 
 type ModalType = "add" | "admin" | "qr" | "details" | null;
 
@@ -11,6 +11,16 @@ type MerchantForm = {
   companyName: string;
   branchId: string;
   branchName: string;
+};
+
+type AdminForm = {
+  companyId: string;
+  branchId: string;
+  companyName: string;
+  branchName: string;
+  fullName: string;
+  phone: string;
+  remark: string;
 };
 
 type CompanyDetail = {
@@ -52,11 +62,7 @@ function getApiError(payload: unknown, fallback: string, status?: number) {
 }
 
 function buildFrontEndTipUrl(companyId: number | string, branchId: number | string) {
-  const baseUrl = (process.env.NEXT_PUBLIC_TIP_FRONTEND_URL ?? "https://waiters-tip.vercel.app/").replace(/\/$/, "");
-  const url = new URL("/tip", baseUrl);
-  url.searchParams.set("companyId", String(companyId));
-  url.searchParams.set("branchId", String(branchId));
-  return url.toString();
+  return buildTippingUrl(companyId, branchId);
 }
 
 function getPositiveNumber(value: unknown): number | undefined {
@@ -70,19 +76,20 @@ function getPositiveNumber(value: unknown): number | undefined {
 
 function resolveTipIds(company: Partial<CompanyDetail> & Record<string, unknown>) {
   const companyId =
-    getPositiveNumber(company.companyId)
-    ?? getPositiveNumber(company.companyCode)
+    getPositiveNumber(company.companyCode)
+    ?? getPositiveNumber(company.companyId)
+    ?? getPositiveNumber(company.id)
     ?? getPositiveNumber(company.company_id)
-    ?? getPositiveNumber(company.id);
+    ?? undefined;
   const branchId =
-    getPositiveNumber(company.branchId)
-    ?? getPositiveNumber(company.branchCode)
+    getPositiveNumber(company.branchCode)
+    ?? getPositiveNumber(company.branchId)
     ?? getPositiveNumber(company.branch_id)
-    ?? getPositiveNumber(company.id);
+    ?? undefined;
 
   return {
-    companyId: companyId ?? 0,
-    branchId: branchId ?? 0,
+    companyId,
+    branchId,
   };
 }
 
@@ -99,23 +106,20 @@ function mapCompanyDetail(value: unknown): BranchRecord {
     throw new Error("The company list returned an unexpected response.");
   }
 
-  const numericId = typeof company.id === "number" ? company.id : Number(company.id ?? "");
-  if (!Number.isFinite(numericId) || numericId <= 0) {
-    throw new Error("The company list returned an unexpected response.");
-  }
-
   const tipIds = resolveTipIds(company);
-  const safeCompanyId = tipIds.companyId > 0 ? tipIds.companyId : numericId;
-  const safeBranchId = tipIds.branchId > 0 ? tipIds.branchId : numericId;
+  const companyId = tipIds.companyId;
+  const branchId = tipIds.branchId;
 
   return {
-    companyId: numericId,
-    restaurantId: String(safeCompanyId),
+    companyId: companyId,
+    companyCode: companyId,
+    restaurantId: companyId ? String(companyId) : "",
     name: company.companyName,
-    branchId: String(safeBranchId),
+    branchId: branchId ? String(branchId) : "",
+    branchCode: branchId,
     branch: company.branchName,
     token: "",
-    tippingUrl: buildFrontEndTipUrl(safeCompanyId, safeBranchId),
+    tippingUrl: companyId && branchId ? buildFrontEndTipUrl(companyId, branchId) : "",
     admins: company.admins,
     waiters: company.waiters,
     status: company.status ? "Active" : "Inactive",
@@ -168,15 +172,128 @@ function buildInitials(value: string | undefined) {
     .join("") || "M";
 }
 
+function extractAdminList(payload: unknown): AdminListItem[] {
+  const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+  const candidateCollections: unknown[] = [
+    payload,
+    root?.data,
+    root?.result,
+    root?.items,
+    root?.value,
+    root?.data && typeof root.data === "object" ? (root.data as Record<string, unknown>).items : null,
+    root?.data && typeof root.data === "object" ? (root.data as Record<string, unknown>).data : null,
+  ];
+
+  const normalizedItems: unknown[] = [];
+  const collect = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(collect);
+      return;
+    }
+    if (value && typeof value === "object") {
+      normalizedItems.push(value);
+    }
+  };
+
+  candidateCollections.forEach(collect);
+  if (!normalizedItems.length) return [];
+
+  const entries = normalizedItems.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+
+    const item = entry as Record<string, unknown>;
+    const name = [
+      item.fullName,
+      item.full_name,
+      item.name,
+      item.adminName,
+      item.displayName,
+      item.firstName,
+      item.username,
+    ].find((value): value is string => typeof value === "string" && value.trim() !== "")?.trim();
+
+    const phone = [
+      item.phone,
+      item.phoneNumber,
+      item.mobile,
+      item.mobileNumber,
+      item.number,
+      item.cellPhone,
+    ].find((value): value is string => typeof value === "string" && value.trim() !== "")?.trim();
+
+    if (!name && !phone) return [];
+
+    const adminId = [
+      item.id,
+      item.adminId,
+      item.admin_id,
+      item.userId,
+      item.user_id,
+    ].find((value): value is string | number => typeof value === "number" || (typeof value === "string" && value.trim() !== ""));
+
+    const statusValue = [
+      item.status,
+      item.state,
+      item.isActive,
+      item.active,
+    ].find((value) => value !== undefined && value !== null);
+
+    const parsedStatus: AdminListItem["status"] =
+      typeof statusValue === "boolean"
+        ? (statusValue ? "Active" : "Terminated")
+        : typeof statusValue === "string"
+          ? (statusValue.toLowerCase() === "terminated" ? "Terminated" : "Active")
+          : "Active";
+
+    return [{
+      id: typeof adminId === "number" ? adminId : (typeof adminId === "string" && adminId.trim() !== "" ? Number(adminId) : undefined),
+      name: name || "Unknown admin",
+      phone: phone || "",
+      status: parsedStatus,
+    }];
+  });
+
+  return entries.filter((entry, index, all) => all.findIndex((candidate) =>
+    candidate.name === entry.name && candidate.phone === entry.phone
+  ) === index);
+}
+
+function readPersistedAdminStatuses() {
+  if (typeof window === "undefined") return {} as AdminStatusMap;
+
+  try {
+    const raw = window.localStorage.getItem("waiterManagementAdminStatuses");
+    if (!raw) return {} as AdminStatusMap;
+    const parsed = JSON.parse(raw) as Partial<AdminStatusMap>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => value === "Active" || value === "Terminated"),
+    ) as AdminStatusMap;
+  } catch {
+    return {} as AdminStatusMap;
+  }
+}
+
+function writePersistedAdminStatuses(map: AdminStatusMap) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem("waiterManagementAdminStatuses", JSON.stringify(map));
+  } catch {
+    // Ignore storage failures silently.
+  }
+}
+
 function QrDisplay({ value, id, logo }: { value: string; id: string; logo?: string }) {
   return (
-    <div className="rounded-[16px] bg-[#f1efee] p-3">
+    <div className="rounded-[16px] bg-white p-3 shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
       <QRCodeCanvas
         id={id}
         value={value}
-        size={120}
+        size={220}
         includeMargin={true}
-        imageSettings={logo ? { src: logo, height: 28, width: 28, excavate: true } : undefined}
+        marginSize={2}
+        bgColor="#ffffff"
+        fgColor="#111827"
+        imageSettings={logo ? { src: logo, height: 36, width: 36, excavate: true } : undefined}
       />
     </div>
   );
@@ -186,10 +303,9 @@ export default function WaiterManagement() {
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [selectedMerchant, setSelectedMerchant] = useState<BranchRecord | null>(null);
   const [merchantForm, setMerchantForm] = useState<MerchantForm>({ companyId: "", companyName: "", branchId: "", branchName: "" });
-  const [adminForm, setAdminForm] = useState({
+  const [adminForm, setAdminForm] = useState<AdminForm>({
     companyId: "",
-    companyCode: "",
-    branchCode: "",
+    branchId: "",
     companyName: "",
     branchName: "",
     fullName: "",
@@ -209,18 +325,18 @@ export default function WaiterManagement() {
   const [branchOptions, setBranchOptions] = useState<BranchOption[]>([]);
   const [isLoadingMerchantOptions, setIsLoadingMerchantOptions] = useState(false);
   const [isLoadingBranchOptions, setIsLoadingBranchOptions] = useState(false);
+  const [isLoadingAdmins, setIsLoadingAdmins] = useState(false);
   const [merchantOptionsError, setMerchantOptionsError] = useState("");
+  const [persistedAdminStatuses, setPersistedAdminStatuses] = useState<AdminStatusMap>({});
 
-  const generateCompanyCode = useCallback(() => {
-    const maxCode = 999999;
-    const minCode = 1000;
-    return String(Math.floor(Math.random() * (maxCode - minCode + 1)) + minCode);
+  useEffect(() => {
+    setPersistedAdminStatuses(readPersistedAdminStatuses());
   }, []);
 
   const loadBranchOptions = useCallback(async (merchantId: string) => {
     if (!merchantId) {
       setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, branchCode: generateCompanyCode(), branchName: "" }));
+      setAdminForm((current) => ({ ...current, branchId: "", branchName: "" }));
       return;
     }
     setIsLoadingBranchOptions(true);
@@ -234,9 +350,8 @@ export default function WaiterManagement() {
       setAdminForm((current) => ({
         ...current,
         companyId: merchantId,
-        companyCode: current.companyCode || generateCompanyCode(),
         companyName: merchantOptions.find((option) => option.id === merchantId)?.name ?? current.companyName,
-        branchCode: current.branchCode || generateCompanyCode(),
+        branchId: current.branchId || selectedBranch?.id || "",
         branchName: selectedBranch?.name ?? "",
       }));
       setMerchantForm((current) => ({
@@ -250,11 +365,11 @@ export default function WaiterManagement() {
       const message = loadError instanceof Error ? loadError.message : "Unable to load branch options.";
       setMerchantOptionsError(message);
       setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, branchCode: generateCompanyCode(), branchName: "" }));
+      setAdminForm((current) => ({ ...current, branchId: "", branchName: "" }));
     } finally {
       setIsLoadingBranchOptions(false);
     }
-  }, [generateCompanyCode, merchantOptions]);
+  }, [merchantOptions]);
 
   const loadMerchantOptions = useCallback(async () => {
     setIsLoadingMerchantOptions(true);
@@ -267,7 +382,7 @@ export default function WaiterManagement() {
       setMerchantOptions(nextOptions);
       if (!nextOptions.length) {
         setBranchOptions([]);
-        setAdminForm((current) => ({ ...current, companyId: "", companyCode: generateCompanyCode(), companyName: "", branchCode: generateCompanyCode(), branchName: "" }));
+        setAdminForm((current) => ({ ...current, companyId: "", branchId: "", companyName: "", branchName: "" }));
         setMerchantForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
         return;
       }
@@ -275,9 +390,8 @@ export default function WaiterManagement() {
       setAdminForm((current) => ({
         ...current,
         companyId: firstMerchant.id,
-        companyCode: current.companyCode || generateCompanyCode(),
         companyName: firstMerchant.name,
-        branchCode: current.branchCode || generateCompanyCode(),
+        branchId: "",
         branchName: "",
       }));
       setMerchantForm((current) => ({
@@ -293,23 +407,18 @@ export default function WaiterManagement() {
       setMerchantOptionsError(message);
       setMerchantOptions([]);
       setBranchOptions([]);
-      setAdminForm((current) => ({ ...current, companyId: "", companyCode: generateCompanyCode(), companyName: "", branchCode: generateCompanyCode(), branchName: "" }));
+      setAdminForm((current) => ({ ...current, companyId: "", branchId: "", companyName: "", branchName: "" }));
       setMerchantForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
     } finally {
       setIsLoadingMerchantOptions(false);
     }
-  }, [generateCompanyCode, loadBranchOptions]);
+  }, [loadBranchOptions]);
 
 
   const loadMerchants = useCallback(async () => {
     setIsLoadingMerchants(true);
     setMerchantLoadError("");
     try {
-      const persistedMerchants = loadMockBranches();
-      if (persistedMerchants.length) {
-        setMerchants(persistedMerchants);
-      }
-
       const response = await fetch("/api/waiter-tips/company", {
         cache: "no-store",
       });
@@ -318,21 +427,9 @@ export default function WaiterManagement() {
       if (!Array.isArray(payload)) throw new Error("The company list endpoint returned an unexpected response.");
 
       const fetchedMerchants = payload.map(mapCompanyDetail);
-      const mergedMerchants = [...fetchedMerchants, ...persistedMerchants].reduce<BranchRecord[]>((accumulator, merchant) => {
-        const key = `${merchant.companyId ?? merchant.restaurantId}-${merchant.branchId}`;
-        if (!accumulator.some((item) => `${item.companyId ?? item.restaurantId}-${item.branchId}` === key)) {
-          accumulator.push(merchant);
-        }
-        return accumulator;
-      }, []);
-
-      setMerchants(mergedMerchants);
-      saveMockBranches(mergedMerchants);
+      setMerchants(fetchedMerchants);
     } catch (loadError) {
-      const persistedMerchants = loadMockBranches();
-      if (persistedMerchants.length) {
-        setMerchants(persistedMerchants);
-      }
+      setMerchants([]);
       setMerchantLoadError(loadError instanceof Error ? loadError.message : "Unable to load merchants.");
     } finally {
       setIsLoadingMerchants(false);
@@ -340,27 +437,16 @@ export default function WaiterManagement() {
   }, []);
 
   useEffect(() => {
-    const persistedMerchants = loadMockBranches();
-    if (persistedMerchants.length) {
-      setMerchants(persistedMerchants);
-    }
-
     const timeoutId = window.setTimeout(() => void loadMerchants(), 0);
     return () => window.clearTimeout(timeoutId);
   }, [loadMerchants]);
 
-  const existingMerchantOptions = useMemo(
-    () => merchants.filter((merchant) => merchant.companyId !== undefined),
-    [merchants],
-  );
-
-  const openAddAdminAccess = async () => {
+  const openAddCompanyAccess = async () => {
     setAdminError("");
     setActiveModal("add");
     setAdminForm({
       companyId: "",
-      companyCode: generateCompanyCode(),
-      branchCode: generateCompanyCode(),
+      branchId: "",
       companyName: "",
       branchName: "",
       fullName: "",
@@ -431,68 +517,34 @@ export default function WaiterManagement() {
       setQrError("Please select a valid branch before generating the QR code.");
       return;
     }
-    if (!logoPreview) {
-      setQrError("Please upload a restaurant logo before generating the QR code.");
-      return;
-    }
 
-    const duplicateBranch = merchants.some(
-      (merchant) => merchant.name.toLocaleLowerCase() === cleanCompanyName.toLocaleLowerCase()
-        && merchant.branch.toLocaleLowerCase() === cleanBranchName.toLocaleLowerCase(),
-    );
-    if (duplicateBranch) {
-      setQrError("This restaurant branch already exists.");
-      return;
-    }
+    const generatedUrl = buildFrontEndTipUrl(selectedCompanyId, selectedBranchId);
+    const nextMerchant: BranchRecord = {
+      companyId: selectedCompanyId,
+      companyCode: selectedCompanyId,
+      restaurantId: String(selectedCompanyId),
+      name: cleanCompanyName,
+      branchId: String(selectedBranchId),
+      branchCode: selectedBranchId,
+      branch: cleanBranchName,
+      token: "",
+      tippingUrl: generatedUrl,
+      logo: logoPreview || undefined,
+      admins: 0,
+      waiters: 0,
+      status: "Active",
+      phone: "",
+      adminList: [],
+    };
 
-    try {
-      const response = await fetch("/api/waiter-tips/company", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyCode: selectedCompanyId,
-          branchCode: selectedBranchId,
-          companyName: cleanCompanyName,
-          branchName: cleanBranchName,
-        }),
-      });
-      const payload: unknown = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(getApiError(payload, "Unable to create the merchant company.", response.status));
-      }
-
-      const createdCompany = payload && typeof payload === "object" ? payload as Partial<CompanyDetail> & Record<string, unknown> : null;
-      if (!createdCompany || typeof createdCompany.companyName !== "string" || typeof createdCompany.branchName !== "string") {
-        throw new Error("The company creation endpoint returned an unexpected response.");
-      }
-
-      const nextMerchant = mapCompanyDetail({
-        ...createdCompany,
-        companyId: selectedCompanyId,
-        companyCode: selectedCompanyId,
-        branchId: selectedBranchId,
-        branchCode: selectedBranchId,
-      });
-      nextMerchant.logo = logoPreview;
-      nextMerchant.tippingUrl = buildFrontEndTipUrl(selectedCompanyId, selectedBranchId);
-
-      setMerchants((current) => {
-        const merged = [nextMerchant, ...current];
-        saveMockBranches(merged);
-        return merged;
-      });
-      setSelectedMerchant(nextMerchant);
-      setQrGenerated(true);
-      setQrError("");
-    } catch (createError) {
-      const fallback = createError instanceof Error ? createError.message : "Unable to create the merchant company.";
-      setQrError(fallback);
-    }
+    setSelectedMerchant(nextMerchant);
+    setQrGenerated(true);
+    setQrError("");
   };
 
   const addCompanyAccess = async () => {
-    const companyCode = Number(adminForm.companyCode);
-    const branchCode = Number(adminForm.branchCode);
+    const companyCode = Number(adminForm.companyId);
+    const branchCode = Number(adminForm.branchId);
     const cleanCompany = adminForm.companyName.trim();
     const cleanBranch = adminForm.branchName.trim();
 
@@ -502,12 +554,12 @@ export default function WaiterManagement() {
     }
 
     if (!Number.isInteger(companyCode) || companyCode <= 0) {
-      setAdminError("Company code is missing or invalid. Please generate a new code.");
+      setAdminError("Please select a valid company ID from the backend before creating the branch.");
       return;
     }
 
     if (!Number.isInteger(branchCode) || branchCode <= 0) {
-      setAdminError("Branch code is missing or invalid. Please generate a new code.");
+      setAdminError("Please select a valid branch ID from the backend before creating the branch.");
       return;
     }
 
@@ -537,12 +589,12 @@ export default function WaiterManagement() {
   };
 
   const addAdminRowAccess = async (merchant: BranchRecord) => {
-    const companyId = merchant.companyId ?? Number(merchant.restaurantId);
+    const companyKey = merchant.companyCode ?? merchant.companyId ?? Number(merchant.restaurantId);
     const fullName = adminForm.fullName.trim();
     const phone = adminForm.phone.trim();
     const remark = adminForm.remark.trim();
 
-    if (!Number.isInteger(companyId) || companyId <= 0) {
+    if (!Number.isInteger(companyKey) || companyKey <= 0) {
       setAdminError("Please select a valid company before adding an admin.");
       return;
     }
@@ -554,7 +606,7 @@ export default function WaiterManagement() {
 
     setIsCreatingAdmin(true);
     try {
-      const response = await fetch(`/api/waiter-tips/companies/${companyId}/admins`, {
+      const response = await fetch(`/api/waiter-tips/companies/${companyKey}/admins`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fullName, phone, remark }),
@@ -564,14 +616,16 @@ export default function WaiterManagement() {
 
       setAdminError("");
       closeModal();
-      if (merchant.companyId !== undefined) {
+      const companyMatchKey = merchant.companyCode ?? merchant.companyId;
+      if (companyMatchKey !== undefined) {
         setMerchants((current) => current.map((item) => {
-          if (item.companyId !== merchant.companyId) return item;
+          const itemKey = item.companyCode ?? item.companyId;
+          if (itemKey !== companyMatchKey) return item;
           return {
             ...item,
             admins: item.admins + 1,
             phone: phone || item.phone,
-            adminList: [...item.adminList, phone],
+            adminList: [...item.adminList, { name: fullName, phone, status: "Active" }],
           };
         }));
       }
@@ -593,9 +647,117 @@ export default function WaiterManagement() {
     anchor.click();
   };
 
-  const openDetails = (merchant: BranchRecord) => {
-    setSelectedMerchant(merchant);
+  const toggleAdminStatus = async (adminToToggle: { id?: number; name: string; phone: string; status: "Active" | "Terminated" }) => {
+    const companyId = selectedMerchant?.companyCode ?? selectedMerchant?.companyId ?? Number(selectedMerchant?.restaurantId);
+    if (!Number.isInteger(companyId) || companyId <= 0 || !adminToToggle.id) {
+      setAdminError("This admin is missing a valid company or admin ID.");
+      return;
+    }
+
+    const nextAction = adminToToggle.status === "Active" ? "terminate" : "activate";
+    let lastError: string | null = null;
+
+    for (const method of ["PUT", "POST"] as const) {
+      try {
+        const response = await fetch(`/api/waiter-tips/${companyId}/${adminToToggle.id}/${nextAction}`, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload: unknown = await response.json().catch(() => null);
+
+        if (!response.ok) {
+          lastError = getApiError(payload, `Unable to ${nextAction} admin.`, response.status);
+          continue;
+        }
+
+        const nextStatus: "Active" | "Terminated" = adminToToggle.status === "Active" ? "Terminated" : "Active";
+
+        setPersistedAdminStatuses((current) => {
+          const nextMap = {
+            ...current,
+            [`${companyId}:${adminToToggle.id}`]: nextStatus,
+          };
+          writePersistedAdminStatuses(nextMap);
+          return nextMap;
+        });
+
+        setSelectedMerchant((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            adminList: current.adminList.map((admin) => (
+              admin.id === adminToToggle.id
+                ? { ...admin, status: nextStatus }
+                : admin
+            )),
+          };
+        });
+
+        setMerchants((current) => current.map((merchant) => {
+          const merchantCompanyId = merchant.companyCode ?? merchant.companyId;
+          if (merchantCompanyId !== companyId) return merchant;
+          return {
+            ...merchant,
+            adminList: merchant.adminList.map((admin) => (
+              admin.id === adminToToggle.id
+                ? { ...admin, status: nextStatus }
+                : admin
+            )),
+          };
+        }));
+
+        return;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : `Unable to ${nextAction} admin.`;
+      }
+    }
+
+    setAdminError(lastError ?? `Unable to ${nextAction} admin.`);
+  };
+
+  const openDetails = async (merchant: BranchRecord) => {
+    const companyKey = merchant.companyCode ?? merchant.companyId ?? Number(merchant.restaurantId);
+
+    setSelectedMerchant({ ...merchant, adminList: merchant.adminList ?? [] });
+    setIsLoadingAdmins(true);
     setActiveModal("details");
+
+    if (!Number.isInteger(companyKey) || companyKey <= 0) {
+      setIsLoadingAdmins(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/waiter-tips/companies/${companyKey}/admins`, { cache: "no-store" });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = getApiError(payload, "Unable to load admins.", response.status);
+        setSelectedMerchant({ ...merchant, adminList: merchant.adminList ?? [] });
+        setMerchantLoadError(message);
+        return;
+      }
+
+      const nextAdmins = extractAdminList(payload).map((admin) => {
+        const persistedKey = `${companyKey}:${admin.id ?? `${admin.name}:${admin.phone}`}`;
+        return {
+          ...admin,
+          status: persistedAdminStatuses[persistedKey] ?? admin.status,
+        };
+      });
+      setSelectedMerchant({ ...merchant, adminList: nextAdmins });
+      setMerchants((current) => current.map((item) => {
+        const itemKey = item.companyCode ?? item.companyId;
+        if (itemKey !== companyKey) return item;
+        return { ...item, adminList: nextAdmins, admins: Math.max(item.admins, nextAdmins.length) };
+      }));
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : "Unable to load admins.";
+      setMerchantLoadError(message);
+      setSelectedMerchant({ ...merchant, adminList: merchant.adminList ?? [] });
+    } finally {
+      setIsLoadingAdmins(false);
+    }
   };
 
   const openAdminModal = (merchant: BranchRecord) => {
@@ -604,8 +766,7 @@ export default function WaiterManagement() {
     setActiveModal("admin");
     setAdminForm({
       companyId: merchant.companyId !== undefined ? String(merchant.companyId) : "",
-      companyCode: "",
-      branchCode: "",
+      branchId: merchant.branchId ? String(merchant.branchId) : "",
       companyName: merchant.name,
       branchName: merchant.branch,
       fullName: "",
@@ -626,6 +787,14 @@ export default function WaiterManagement() {
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void openAddCompanyAccess()}
+              className="inline-flex items-center gap-2 rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] px-5 py-3 text-[17px] font-semibold text-[#2f2b29] shadow-[0_2px_0_rgba(0,0,0,0.04)] transition hover:bg-[#efeae8]"
+            >
+              <span className="text-[18px] leading-none">＋</span>
+              Add Company
+            </button>
             <button
               type="button"
               onClick={() => void openGenerateQr()}
@@ -696,7 +865,7 @@ export default function WaiterManagement() {
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => openDetails(merchant)}
+                          onClick={() => void openDetails(merchant)}
                           className="rounded-[12px] border border-[#d7d1ce] bg-[#f7f3f1] px-4 py-2 text-[15px] font-medium text-[#3c3835] transition hover:bg-[#efebe9]"
                         >
                           Details
@@ -728,26 +897,25 @@ export default function WaiterManagement() {
           <div className="max-h-[90vh] w-full max-w-[520px] overflow-y-auto rounded-[18px] border border-[#ded8d5] bg-[#f3f0ee] p-5 shadow-[0_20px_60px_rgba(10,10,12,0.18)]">
             {activeModal === "add" && (
               <>
-                <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Company</h2>
-
-                <div className="space-y-5">
+                <div className="space-y-5 pt-1">
                   <div>
+                     <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Company</h2>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Name</label>
                     <select
                       value={adminForm.companyId || "choose"}
                       onChange={async (event) => {
-                        const nextMerchantId = event.target.value;
-                        if (!nextMerchantId || nextMerchantId === "choose") {
-                          setAdminForm((current) => ({ ...current, companyId: "", companyCode: generateCompanyCode(), companyName: "", branchCode: generateCompanyCode(), branchName: "" }));
+                        const nextCompanyId = event.target.value;
+                        if (!nextCompanyId || nextCompanyId === "choose") {
+                          setAdminForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
                           setBranchOptions([]);
                           return;
                         }
-                        const companyName = merchantOptions.find((merchant) => merchant.id === nextMerchantId)?.name ?? "";
-                        setAdminForm((current) => ({ ...current, companyId: nextMerchantId, companyCode: current.companyCode || generateCompanyCode(), companyName, branchCode: current.branchCode || generateCompanyCode(), branchName: "" }));
-                        await loadBranchOptions(nextMerchantId);
+                        const nextCompanyName = merchantOptions.find((merchant) => merchant.id === nextCompanyId)?.name ?? "";
+                        setAdminForm((current) => ({ ...current, companyId: nextCompanyId, companyName: nextCompanyName, branchId: "", branchName: "" }));
+                        await loadBranchOptions(nextCompanyId);
                       }}
                       disabled={isLoadingMerchantOptions || !merchantOptions.length}
-                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#efeeed] px-4 text-[18px] text-[#2f2b29] outline-none transition focus:border-[#b3a7a1] disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <option value="choose">{isLoadingMerchantOptions ? "Loading companies..." : "Select a company"}</option>
                       {merchantOptions.map((merchant) => (
@@ -757,40 +925,26 @@ export default function WaiterManagement() {
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch Name</label>
+                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch</label>
                     <select
-                      value={adminForm.branchName || "choose"}
-                      onChange={(event) => setAdminForm((current) => ({
-                        ...current,
-                        branchCode: current.branchCode || generateCompanyCode(),
-                        branchName: event.target.value === "choose" ? "" : event.target.value,
-                      }))}
+                      value={adminForm.branchId || "choose"}
+                      onChange={(event) => {
+                        const nextBranchId = event.target.value;
+                        const nextBranchName = branchOptions.find((branch) => branch.id === nextBranchId)?.name ?? "";
+                        setAdminForm((current) => ({
+                          ...current,
+                          branchId: nextBranchId === "choose" ? "" : nextBranchId,
+                          branchName: nextBranchId === "choose" ? "" : nextBranchName,
+                        }));
+                      }}
                       disabled={isLoadingBranchOptions || !branchOptions.length}
-                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#efeeed] px-4 text-[18px] text-[#2f2b29] outline-none transition focus:border-[#b3a7a1] disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <option value="choose">{isLoadingBranchOptions ? "Loading branches..." : "Select a branch"}</option>
                       {branchOptions.map((branch) => (
-                        <option key={branch.id} value={branch.name}>{branch.name}</option>
+                        <option key={branch.id} value={branch.id}>{branch.name}</option>
                       ))}
                     </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Code</label>
-                    <input
-                      value={adminForm.companyCode || ""}
-                      readOnly
-                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Branch Code</label>
-                    <input
-                      value={adminForm.branchCode || ""}
-                      readOnly
-                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none"
-                    />
                   </div>
                 </div>
 
@@ -861,6 +1015,89 @@ export default function WaiterManagement() {
                   <button type="button" onClick={() => addAdminRowAccess(selectedMerchant)} disabled={isCreatingAdmin} className="h-[54px] flex-1 rounded-[14px] bg-[#6b1b3d] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)] disabled:cursor-wait disabled:opacity-60">
                     {isCreatingAdmin ? "Creating..." : "Create"}
                   </button>
+                </div>
+              </>
+            )}
+
+            {activeModal === "details" && selectedMerchant && (
+              <>
+                <div className="space-y-6">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] p-3">
+                      <div className="text-[12px] uppercase tracking-[0.08em] text-[#5b554f]">Active Admins</div>
+                      <div className="mt-2 text-[26px] font-semibold text-[#2a2725]">{selectedMerchant.admins}</div>
+                    </div>
+                    <div className="rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] p-3">
+                      <div className="text-[12px] uppercase tracking-[0.08em] text-[#5b554f]">Total Waiters</div>
+                      <div className="mt-2 text-[26px] font-semibold text-[#2a2725]">{selectedMerchant.waiters}</div>
+                    </div>
+                    <div className="rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] p-3">
+                      <div className="text-[12px] uppercase tracking-[0.08em] text-[#5b554f]">QR Status</div>
+                      <div className={`mt-2 flex items-center gap-2 text-[15px] font-medium ${selectedMerchant.status === "Active" ? "text-[#1d7a57]" : "text-[#625c58]"}`}>
+                        <span className={`h-2.5 w-2.5 rounded-full ${selectedMerchant.status === "Active" ? "bg-[#25a56b]" : "bg-[#8e8782]"}`} />
+                        {selectedMerchant.status}
+                      </div>
+                    </div>
+                  </div>
+
+
+                  <div>
+                    <h3 className="mb-4 text-[20px] font-semibold text-[#2d2a28]">Admins</h3>
+                    {isLoadingAdmins && (
+                      <p className="mb-3 text-sm text-[#6b625d]">Loading admins…</p>
+                    )}
+                    {!isLoadingAdmins && selectedMerchant.admins > 0 && selectedMerchant.adminList.length === 0 && (
+                      <p className="mb-3 text-sm text-[#6b625d]">No admins were returned by the company admins endpoint.</p>
+                    )}
+
+                    {!isLoadingAdmins && (
+                      <div className="overflow-hidden rounded-[12px] border border-[#ded8d5] bg-[#f7f3f1]">
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full border-collapse text-left text-sm">
+                            <thead className="bg-[#efeae8] text-[12px] uppercase tracking-[0.06em] text-[#5f5853]">
+                              <tr>
+                                <th className="px-3 py-3 font-semibold">Name</th>
+                                <th className="px-3 py-3 font-semibold">Phone</th>
+                                <th className="px-3 py-3 font-semibold">Status</th>
+                                <th className="px-3 py-3 font-semibold text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {selectedMerchant.adminList.length > 0 ? (
+                                selectedMerchant.adminList.map((admin) => (
+                                  <tr key={`${admin.name}-${admin.phone || "no-phone"}`} className="border-t border-[#e4dfdd]">
+                                    <td className="px-3 py-3 font-medium text-[#2d2a28]">{admin.name}</td>
+                                    <td className="px-3 py-3 text-[#4d4744]">{admin.phone || "—"}</td>
+                                    <td className="px-3 py-3">
+                                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[12px] font-semibold ${admin.status === "Active" ? "bg-[#dff8ef] text-[#1d7a57]" : "bg-[#f4e6e6] text-[#8a2d2d]"}`}>
+                                        {admin.status}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() => void toggleAdminStatus(admin)}
+                                        className={`rounded-[10px] px-3 py-2 text-[13px] font-semibold ${admin.status === "Active" ? "bg-[#f3e6e9] text-[#7a294d]" : "bg-[#e6f4ea] text-[#1e7b52]"}`}
+                                      >
+                                        {admin.status === "Active" ? "Terminate" : "Activate"}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))
+                              ) : (
+                                <tr>
+                                  <td colSpan={4} className="px-3 py-4 text-center text-[15px] text-[#5a544e]">
+                                    No admins assigned yet.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                    <p className="mt-3 text-sm text-[#6b625d]">Admin removal is unavailable because no removal endpoint is documented.</p>
+                  </div>
                 </div>
               </>
             )}
@@ -988,11 +1225,8 @@ export default function WaiterManagement() {
                     </div>
 
                     <div className="mt-7 flex items-center gap-4">
-                      <button type="button" onClick={closeModal} className="h-[54px] flex-1 rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] text-[18px] font-semibold text-[#2d2a28]">
-                        Cancel
-                      </button>
-                      <button type="button" onClick={closeModal} className="h-[54px] flex-1 rounded-[14px] bg-[#1d7a57] text-[18px] font-semibold text-white shadow-[0_2px_0_rgba(0,0,0,0.08)]">
-                        Save Merchant
+                      <button type="button" onClick={closeModal} className="h-[54px] w-full rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] text-[18px] font-semibold text-[#2d2a28]">
+                        Close
                       </button>
                     </div>
                   </>
@@ -1000,93 +1234,6 @@ export default function WaiterManagement() {
               </>
             )}
 
-            {activeModal === "details" && selectedMerchant && (
-              <>
-                <div className="space-y-6">
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] p-3">
-                      <div className="text-[12px] uppercase tracking-[0.08em] text-[#5b554f]">Active Admins</div>
-                      <div className="mt-2 text-[26px] font-semibold text-[#2a2725]">{selectedMerchant.admins}</div>
-                    </div>
-                    <div className="rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] p-3">
-                      <div className="text-[12px] uppercase tracking-[0.08em] text-[#5b554f]">Total Waiters</div>
-                      <div className="mt-2 text-[26px] font-semibold text-[#2a2725]">{selectedMerchant.waiters}</div>
-                    </div>
-                    <div className="rounded-[14px] border border-[#d7d1ce] bg-[#f7f3f1] p-3">
-                      <div className="text-[12px] uppercase tracking-[0.08em] text-[#5b554f]">QR Status</div>
-                      <div className={`mt-2 flex items-center gap-2 text-[15px] font-medium ${selectedMerchant.status === "Active" ? "text-[#1d7a57]" : "text-[#625c58]"}`}>
-                        <span className={`h-2.5 w-2.5 rounded-full ${selectedMerchant.status === "Active" ? "bg-[#25a56b]" : "bg-[#8e8782]"}`} />
-                        {selectedMerchant.status}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="mb-4 text-[20px] font-semibold text-[#2d2a28]">QR Code</h3>
-                    {selectedMerchant.tippingUrl ? (
-                      <>
-                        <div className="flex justify-center">
-                          <QRCodeCanvas
-                            id={`qr-${selectedMerchant.branchId}`}
-                            value={selectedMerchant.tippingUrl}
-                            size={120}
-                            includeMargin={true}
-                            imageSettings={selectedMerchant.logo ? { src: selectedMerchant.logo, height: 28, width: 28, excavate: true } : undefined}
-                          />
-                        </div>
-
-                        <div className="mt-4 text-center text-[15px] text-[#4d4944]">{selectedMerchant.name} | {selectedMerchant.branch}</div>
-
-                        <div className="mt-4 space-y-2">
-                          <label htmlFor="branch-tipping-url" className="block text-[14px] font-medium text-[#4d4944]">Tipping URL</label>
-                          <input
-                            id="branch-tipping-url"
-                            readOnly
-                            value={selectedMerchant.tippingUrl}
-                            className="h-[46px] w-full rounded-[12px] border border-[#d8d1ce] bg-[#f5f2f1] px-3 text-[14px] text-[#2f2b29] outline-none"
-                          />
-                        </div>
-
-                        <div className="mt-5 flex justify-center">
-                          <button type="button" onClick={() => handleDownloadQr(selectedMerchant)} className="inline-flex items-center gap-2 text-[18px] font-semibold text-[#b05575]">
-                            <span>↓</span>
-                            Download QR
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <p className="rounded-[12px] border border-dashed border-[#d7d1ce] bg-[#f8f5f4] p-3 text-center text-[15px] text-[#5a544e]">
-                        QR details are not returned by the current company API.
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <h3 className="mb-4 text-[20px] font-semibold text-[#2d2a28]">Admins</h3>
-                    {selectedMerchant.admins > 0 && selectedMerchant.adminList.length === 0 && (
-                      <p className="mb-3 text-sm text-[#6b625d]">The company list API provides the admin count, but not the admins’ phone numbers.</p>
-                    )}
-                    <div className="space-y-3">
-                      {selectedMerchant.adminList.map((adminPhone) => (
-                        <div key={adminPhone} className="flex items-center justify-between rounded-[12px] border border-[#ded8d5] bg-[#f7f3f1] p-3">
-                          <div>
-                            <div className="text-[18px] font-medium text-[#2d2a28]">{selectedMerchant.name} · {selectedMerchant.branch}</div>
-                            <div className="mt-1 text-[15px] text-[#5a544e]">{adminPhone}</div>
-                          </div>
-                        </div>
-                      ))}
-
-                      {selectedMerchant.adminList.length === 0 && selectedMerchant.admins === 0 && (
-                        <div className="rounded-[12px] border border-dashed border-[#d7d1ce] bg-[#f8f5f4] p-3 text-[15px] text-[#5a544e]">
-                          No admins assigned yet.
-                        </div>
-                      )}
-                    </div>
-                    <p className="mt-3 text-sm text-[#6b625d]">Admin removal is unavailable because no removal endpoint is documented.</p>
-                  </div>
-                </div>
-              </>
-            )}
           </div>
         </div>
       )}
