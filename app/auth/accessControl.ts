@@ -31,7 +31,7 @@ const defaultAccounts: AdminAccount[] = [
         password: defaultFirstLoginPassword,
         role: "Super Admin",
         pages: [],
-        mustChangePassword: true,
+        mustChangePassword: false,
     },
     {
         id: "demo-staff",
