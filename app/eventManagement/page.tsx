@@ -26,25 +26,29 @@ type TicketTransaction = {
 
 type Summary = {
   totalRevenue: number;
-  revenueChangePercent: number;
   totalBookings: number;
-  bookingsChangePercent: number;
   totalRedeemed: number;
   redeemedPercent: number;
   notRedeemed: number;
   notRedeemedPercent: number;
-  remainingTickets: number;
-  eventCapacity: number;
 };
 
-function ChangeIndicator({ value }: { value: number }) {
-  if (value === 0) return <span className="stat-sub neutral">— vs yesterday</span>;
-  const isUp = value > 0;
-  return (
-    <span className={`stat-sub ${isUp ? 'up' : 'down'}`}>
-      {isUp ? '▲' : '▼'} {Math.abs(value)}% vs yesterday
-    </span>
-  );
+function buildSummaryFromTransactions(transactions: TicketTransaction[]): Summary {
+  const totalRevenue = transactions.reduce((sum, transaction) => sum + (Number(transaction.totalPrice) || 0), 0);
+  const totalBookings = transactions.reduce((sum, transaction) => sum + (Number(transaction.quantity) || 0), 0);
+  const totalRedeemed = transactions
+    .filter((transaction) => transaction.status === 'Redeemed')
+    .reduce((sum, transaction) => sum + (Number(transaction.quantity) || 0), 0);
+  const notRedeemed = totalBookings - totalRedeemed;
+
+  return {
+    totalRevenue,
+    totalBookings,
+    totalRedeemed,
+    redeemedPercent: totalBookings > 0 ? Number(((totalRedeemed / totalBookings) * 100).toFixed(1)) : 0,
+    notRedeemed,
+    notRedeemedPercent: totalBookings > 0 ? Number((((totalBookings - totalRedeemed) / totalBookings) * 100).toFixed(1)) : 0,
+  };
 }
 
 function PercentBar({ percent, color }: { percent: number; color: string }) {
@@ -98,21 +102,24 @@ export default function EventManagement() {
     async function fetchTransactions() {
       try {
         const res = await fetch('/eventManagement/api/transactions?t=' + Date.now());
-        if (!res.ok) throw new Error('API error');
-        const data = await res.json();
-        console.log('API Response:', data);
-        if (data.success && data.summary) {
-          setTransactions(data.data ?? []);
-          setSummary(data.summary);
-        } else if (data.error) {
-          console.error('API returned error:', data.error);
-          setError(true);
-        } else {
-          console.error('Unexpected response format:', data);
-          setError(true);
+        const payload = await res.json();
+
+        if (!res.ok || !payload || typeof payload !== 'object' || payload.success !== true) {
+          throw new Error(payload?.error || 'Unable to retrieve transactions. Please try again.');
         }
+
+        const nextTransactions = Array.isArray(payload.data) ? payload.data : [];
+        const nextSummary = payload.summary && typeof payload.summary.totalRevenue === 'number'
+          ? payload.summary
+          : buildSummaryFromTransactions(nextTransactions);
+
+        setTransactions(nextTransactions);
+        setSummary(nextSummary);
+        setError(false);
       } catch (err) {
         console.error('Failed to fetch transactions:', err);
+        setTransactions([]);
+        setSummary(null);
         setError(true);
       } finally {
         setLoading(false);
@@ -384,31 +391,30 @@ export default function EventManagement() {
         <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
           Loading ticket sales data...
         </div>
-      ) : error || !summary ? (
+      ) : error ? (
         <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--danger)' }}>
-          Failed to load data. Please refresh the page.
+          Unable to retrieve transactions. Please try again.
         </div>
-      ) : (
+      ) : transactions.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
+          No transactions found for this event.
+        </div>
+      ) : summary ? (
         <>
           {/* SUMMARY CARDS */}
           <div className="stats-grid animate-fade-in delay-2">
-            {/* Total Revenue */}
             <div className="stat-card glass-panel">
               <div className="stat-title">Total Revenue</div>
               <div className="stat-value highlight">
                 {summary.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB
               </div>
-              <ChangeIndicator value={summary.revenueChangePercent} />
             </div>
 
-            {/* Total Bookings */}
             <div className="stat-card glass-panel">
               <div className="stat-title">Total Bookings</div>
               <div className="stat-value">{summary.totalBookings}</div>
-              <ChangeIndicator value={summary.bookingsChangePercent} />
             </div>
 
-            {/* Total Redeemed */}
             <div className="stat-card glass-panel">
               <div className="stat-title">Total Redeemed</div>
               <div className="stat-value" style={{ color: 'var(--success)' }}>{summary.totalRedeemed}</div>
@@ -416,23 +422,11 @@ export default function EventManagement() {
               <PercentBar percent={summary.redeemedPercent} color="var(--success)" />
             </div>
 
-            {/* Not Redeemed */}
             <div className="stat-card glass-panel">
               <div className="stat-title">Not Redeemed</div>
               <div className="stat-value" style={{ color: 'var(--warning)' }}>{summary.notRedeemed}</div>
               <span className="stat-sub neutral">{summary.notRedeemedPercent}% of bookings</span>
               <PercentBar percent={summary.notRedeemedPercent} color="var(--warning)" />
-            </div>
-
-            {/* Remaining Tickets */}
-            <div className="stat-card glass-panel">
-              <div className="stat-title">Remaining Tickets</div>
-              <div className="stat-value">{summary.remainingTickets}</div>
-              <span className="stat-sub neutral">of {summary.eventCapacity} capacity</span>
-              <PercentBar
-                percent={Math.round(((summary.eventCapacity - summary.remainingTickets) / summary.eventCapacity) * 100)}
-                color="var(--accent)"
-              />
             </div>
           </div>
 
@@ -640,7 +634,7 @@ export default function EventManagement() {
             </div>
           </div>
         </>
-      )}
+      ) : null}
       </div>
 
       {/* ── BOOKING DETAILS MODAL ─────────────────── */}

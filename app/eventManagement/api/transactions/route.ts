@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-const API_URL = 'http://196.191.244.130:33333';
-const API_KEY = '5D5EAFF4-D29A-485B-BDB9-785EF86FFFAE';
+const API_URL = 'https://v7-hulubeje.cnetcommerce.com/api/event/get_saved_event_txns?company=813804&branchId=121&event=3';
+const API_KEY = process.env.HULUBEJE_API_KEY;
 
 type RawTransaction = Record<string, unknown>;
 
@@ -27,216 +27,116 @@ type NormalizedTransaction = {
   ticketType: string;
 };
 
-function buildFallbackTransactions(): NormalizedTransaction[] {
-  return [
-    {
-      id: 'demo-1001',
-      customerName: 'Marta Bekele',
-      customerContact: '+251911000111',
-      voucherCode: 'EVT-1001',
-      bookingDateTime: '2026-09-17T09:15:00Z',
-      eventName: 'City Music Night',
-      eventDateTime: '2026-09-20T18:30:00Z',
-      eventOrganizer: 'Addis Events Co.',
-      paymentPhone: '+251911000111',
-      paymentMethod: 'Telebirr',
-      paymentReference: 'TB-88291',
-      quantity: 2,
-      totalPrice: 2200,
-      invitedToName: '',
-      invitedContact: '',
-      status: 'Booked',
-      ticketType: 'Regular',
-    },
-    {
-      id: 'demo-1002',
-      customerName: 'Samuel Worku',
-      customerContact: '+251922000222',
-      voucherCode: 'EVT-1002',
-      bookingDateTime: '2026-09-17T12:40:00Z',
-      eventName: 'Startup Expo',
-      eventDateTime: '2026-09-25T10:00:00Z',
-      eventOrganizer: 'Mela Hub',
-      paymentPhone: '+251922000222',
-      paymentMethod: 'CBE',
-      paymentReference: 'CBE-44521',
-      quantity: 1,
-      totalPrice: 950,
-      invitedToName: 'Liya Worku',
-      invitedContact: '+251933000333',
-      status: 'Redeemed',
-      ticketType: 'VIP',
-    },
-    {
-      id: 'demo-1003',
-      customerName: 'Hana Tadesse',
-      customerContact: '+251933000333',
-      voucherCode: 'EVT-1003',
-      bookingDateTime: '2026-09-16T15:20:00Z',
-      eventName: 'Fashion Week',
-      eventDateTime: '2026-09-22T19:00:00Z',
-      eventOrganizer: 'Style Collective',
-      paymentPhone: '+251933000333',
-      paymentMethod: 'Bank Transfer',
-      paymentReference: 'BT-3018',
-      quantity: 3,
-      totalPrice: 5100,
-      invitedToName: '',
-      invitedContact: '',
-      status: 'Booked',
-      ticketType: 'VVIP',
-    },
-    {
-      id: 'demo-1004',
-      customerName: 'Daniel Assefa',
-      customerContact: '+251944000444',
-      voucherCode: 'EVT-1004',
-      bookingDateTime: '2026-09-15T08:00:00Z',
-      eventName: 'City Music Night',
-      eventDateTime: '2026-09-20T18:30:00Z',
-      eventOrganizer: 'Addis Events Co.',
-      paymentPhone: '+251944000444',
-      paymentMethod: 'Telebirr',
-      paymentReference: 'TB-99841',
-      quantity: 2,
-      totalPrice: 2400,
-      invitedToName: '',
-      invitedContact: '',
-      status: 'Booked',
-      ticketType: 'Regular',
-    },
-  ];
-}
+type EventApiResponse = {
+  isSuccessful?: boolean;
+  data?: unknown;
+  errorMessages?: string[] | null;
+  additionalParameters?: unknown;
+};
 
 function buildSummary(transactions: NormalizedTransaction[]) {
-  const eventCapacity = 200;
-  const totalRevenue = transactions.reduce((sum: number, t: NormalizedTransaction) => sum + (Number(t.totalPrice) || 0), 0);
-  const totalBookings = transactions.reduce((sum: number, t: NormalizedTransaction) => sum + (Number(t.quantity) || 0), 0);
+  const totalRevenue = transactions.reduce((sum: number, transaction: NormalizedTransaction) => sum + (Number(transaction.totalPrice) || 0), 0);
+  const totalBookings = transactions.reduce((sum: number, transaction: NormalizedTransaction) => sum + (Number(transaction.quantity) || 0), 0);
   const totalRedeemed = transactions
-    .filter((t: NormalizedTransaction) => t.status === 'Redeemed')
-    .reduce((sum: number, t: NormalizedTransaction) => sum + (Number(t.quantity) || 0), 0);
+    .filter((transaction: NormalizedTransaction) => transaction.status === 'Redeemed')
+    .reduce((sum: number, transaction: NormalizedTransaction) => sum + (Number(transaction.quantity) || 0), 0);
   const notRedeemed = totalBookings - totalRedeemed;
-  const remainingTickets = Math.max(0, eventCapacity - totalBookings);
-  const yesterdayRevenue = 2200.0;
-  const yesterdayBookings = 7;
 
   return {
     totalRevenue,
-    revenueChangePercent: yesterdayRevenue > 0
-      ? Number((((totalRevenue - yesterdayRevenue) / yesterdayRevenue) * 100).toFixed(1))
-      : 0,
     totalBookings,
-    bookingsChangePercent: yesterdayBookings > 0
-      ? Number((((totalBookings - yesterdayBookings) / yesterdayBookings) * 100).toFixed(1))
-      : 0,
     totalRedeemed,
-    redeemedPercent: totalBookings > 0
-      ? Number(((totalRedeemed / totalBookings) * 100).toFixed(1))
-      : 0,
+    redeemedPercent: totalBookings > 0 ? Number(((totalRedeemed / totalBookings) * 100).toFixed(1)) : 0,
     notRedeemed,
-    notRedeemedPercent: totalBookings > 0
-      ? Number((((totalBookings - totalRedeemed) / totalBookings) * 100).toFixed(1))
-      : 0,
-    remainingTickets,
-    eventCapacity,
+    notRedeemedPercent: totalBookings > 0 ? Number((((totalBookings - totalRedeemed) / totalBookings) * 100).toFixed(1)) : 0,
   };
 }
 
+function normalizeTransactions(transactions: RawTransaction[]): NormalizedTransaction[] {
+  return transactions.map((transaction: RawTransaction): NormalizedTransaction => ({
+    id: String(transaction.id ?? transaction.txn_id ?? ''),
+    customerName: String(transaction.ticketHolder ?? transaction.customerName ?? transaction.customer_name ?? transaction.name ?? ''),
+    customerContact: String(transaction.ticketHolderPhone ?? transaction.customerContact ?? transaction.customer_contact ?? transaction.contact ?? ''),
+    voucherCode: String(transaction.voucherCode ?? transaction.voucher_code ?? transaction.code ?? ''),
+    bookingDateTime: String(transaction.bookingDateTime ?? transaction.booking_date ?? transaction.booking_datetime ?? transaction.createdDate ?? new Date().toISOString()),
+    eventName: String(transaction.eventName ?? transaction.event_name ?? transaction.event ?? ''),
+    eventDateTime: String(transaction.eventStartDate ?? transaction.eventDateTime ?? transaction.event_date ?? transaction.event_datetime ?? new Date().toISOString()),
+    eventOrganizer: String(transaction.eventOrganizerName ?? transaction.eventOrganizer ?? transaction.organizer_name ?? transaction.organizer ?? ''),
+    paymentPhone: String(transaction.paymentPhone ?? transaction.payment_phone ?? transaction.phone ?? ''),
+    paymentMethod: String(transaction.paymentMethod ?? transaction.payment_method ?? 'Unknown'),
+    paymentReference: String(transaction.paymentReference ?? transaction.payment_ref ?? transaction.reference ?? ''),
+    quantity: Number(transaction.quantity ?? transaction.qty ?? 1),
+    totalPrice: Number(transaction.totalAmount ?? transaction.totalPrice ?? transaction.total ?? transaction.price ?? 0),
+    invitedToName: String(transaction.invitedToName ?? transaction.invited_name ?? ''),
+    invitedContact: String(transaction.invitedContact ?? transaction.invited_contact ?? ''),
+    status: String(transaction.status ?? 'Booked'),
+    ticketType: String(transaction.ticketType ?? transaction.ticket_type ?? 'Regular'),
+  }));
+}
+
 export async function GET() {
-  try {
-    const response = await fetch(
-      `${API_URL}/api/event/get_saved_event_txns?company=813804&branchId=121&event=3`,
-      {
-        method: 'GET',
-        headers: {
-          'x-api-key': API_KEY,
-          'Content-Type': 'application/json',
-        },
-      }
+  if (!API_KEY) {
+    return NextResponse.json(
+      { success: false, error: 'API_KEY is not configured.' },
+      { status: 500 }
     );
+  }
+
+  try {
+    const response = await fetch(API_URL, {
+      method: 'GET',
+      headers: {
+        'x-api-key': API_KEY,
+        'Content-Type': 'application/json',
+      },
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`API error: ${response.status} ${response.statusText}`, errorText);
-      const fallbackTransactions = buildFallbackTransactions();
-      return NextResponse.json({
-        success: true,
-        dataSource: 'sample',
-        data: fallbackTransactions,
-        summary: buildSummary(fallbackTransactions),
-      });
+      console.error(`Event transactions API error: ${response.status} ${response.statusText}`, errorText);
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Event transactions API request failed: ${response.status} ${response.statusText}`,
+        },
+        { status: response.status || 502 }
+      );
     }
 
-    const apiData: unknown = await response.json();
-    console.log('Raw API Response:', JSON.stringify(apiData, null, 2));
+    const payload: EventApiResponse = await response.json();
 
-    let transactions: RawTransaction[] = [];
-
-    if (Array.isArray(apiData)) {
-      transactions = apiData as RawTransaction[];
-    } else if (apiData && typeof apiData === 'object') {
-      const apiObject = apiData as Record<string, unknown>;
-
-      if (Array.isArray(apiObject.data)) {
-        transactions = apiObject.data as RawTransaction[];
-      } else if (Array.isArray(apiObject.transactions)) {
-        transactions = apiObject.transactions as RawTransaction[];
-      } else {
-        console.warn('Unexpected API response format:', apiData);
-      }
-    } else {
-      console.warn('Unexpected API response format:', apiData);
+    if (!payload || typeof payload !== 'object' || typeof payload.isSuccessful !== 'boolean') {
+      return NextResponse.json(
+        { success: false, error: 'Unexpected response format from the event transactions API.' },
+        { status: 502 }
+      );
     }
 
-    console.log('Parsed transactions count:', transactions.length);
-    if (transactions.length > 0) {
-      console.log('First transaction:', JSON.stringify(transactions[0], null, 2));
+    if (!payload.isSuccessful) {
+      const errorMessages = Array.isArray(payload.errorMessages) ? payload.errorMessages : [];
+      return NextResponse.json(
+        {
+          success: false,
+          error: errorMessages.length > 0 ? errorMessages.join(' ') : 'The event transactions API reported a failure.',
+        },
+        { status: 502 }
+      );
     }
 
-    const normalizedTransactions: NormalizedTransaction[] = transactions.map((t: RawTransaction): NormalizedTransaction => ({
-      id: String(t.id ?? t.txn_id ?? ''),
-      customerName: String(t.ticketHolder ?? t.customerName ?? t.customer_name ?? t.name ?? ''),
-      customerContact: String(t.ticketHolderPhone ?? t.customerContact ?? t.customer_contact ?? t.contact ?? ''),
-      voucherCode: String(t.voucherCode ?? t.voucher_code ?? t.code ?? ''),
-      bookingDateTime: String(t.bookingDateTime ?? t.booking_date ?? t.booking_datetime ?? t.createdDate ?? new Date().toISOString()),
-      eventName: String(t.eventName ?? t.event_name ?? t.event ?? ''),
-      eventDateTime: String(t.eventStartDate ?? t.eventDateTime ?? t.event_date ?? t.event_datetime ?? new Date().toISOString()),
-      eventOrganizer: String(t.eventOrganizerName ?? t.eventOrganizer ?? t.organizer_name ?? t.organizer ?? ''),
-      paymentPhone: String(t.paymentPhone ?? t.payment_phone ?? t.phone ?? ''),
-      paymentMethod: String(t.paymentMethod ?? t.payment_method ?? 'Unknown'),
-      paymentReference: String(t.paymentReference ?? t.payment_ref ?? t.reference ?? ''),
-      quantity: Number(t.quantity ?? t.qty ?? 1),
-      totalPrice: Number(t.totalAmount ?? t.totalPrice ?? t.total ?? t.price ?? 0),
-      invitedToName: String(t.invitedToName ?? t.invited_name ?? ''),
-      invitedContact: String(t.invitedContact ?? t.invited_contact ?? ''),
-      status: String(t.status ?? 'Booked'),
-      ticketType: String(t.ticketType ?? t.ticket_type ?? 'Regular'),
-    }));
-
-    console.log('Mapped transactions:', normalizedTransactions.length);
-
-    const transactionsWithOrganizer = normalizedTransactions.map((transaction: NormalizedTransaction) => ({
-      ...transaction,
-      eventOrganizer: transaction.eventOrganizer || 'Unknown Organizer',
-    }));
+    const rawTransactions = Array.isArray(payload.data) ? payload.data : [];
+    const normalizedTransactions = normalizeTransactions(rawTransactions as RawTransaction[]);
 
     return NextResponse.json({
       success: true,
-      dataSource: 'live',
-      data: transactionsWithOrganizer,
-      summary: buildSummary(transactionsWithOrganizer),
+      data: normalizedTransactions,
+      summary: buildSummary(normalizedTransactions),
     });
   } catch (error) {
-    console.error('Failed to fetch transactions from API; using fallback dataset:', error);
-    const fallbackTransactions = buildFallbackTransactions();
+    const errorMessage = error instanceof Error ? error.message : 'Unable to retrieve transactions from the event API.';
+    console.error('Failed to fetch transactions from the event API:', errorMessage);
     return NextResponse.json(
-      {
-        success: true,
-        dataSource: 'sample',
-        data: fallbackTransactions,
-        summary: buildSummary(fallbackTransactions),
-      },
-      { status: 200 }
+      { success: false, error: errorMessage },
+      { status: 502 }
     );
   }
 }

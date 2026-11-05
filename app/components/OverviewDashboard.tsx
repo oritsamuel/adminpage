@@ -61,7 +61,6 @@ export default function OverviewDashboard() {
   const [ugcActivity, setUgcActivity] = useState<UGCActivity | null>(null);
   const [ugcError, setUgcError] = useState("");
   const [eventSummary, setEventSummary] = useState<EventSummary | null>(null);
-  const [eventSource, setEventSource] = useState<"live" | "sample" | null>(null);
   const [eventError, setEventError] = useState("");
 
   useEffect(() => {
@@ -124,7 +123,6 @@ export default function OverviewDashboard() {
       .then(async (response) => {
         const payload = await response.json() as {
           success?: boolean;
-          dataSource?: "live" | "sample";
           summary?: EventSummary;
         };
         if (!response.ok || !payload.success || !payload.summary) {
@@ -132,7 +130,6 @@ export default function OverviewDashboard() {
         }
         if (isCurrent) {
           setEventSummary(payload.summary);
-          setEventSource(payload.dataSource === "sample" ? "sample" : "live");
         }
       })
       .catch((error: unknown) => {
@@ -213,7 +210,6 @@ export default function OverviewDashboard() {
               <div>
                 <div className="flex items-center gap-2">
                   <Link href="/eventManagement" className="text-sm font-semibold text-[#183c3d] hover:underline">Event Dashboard</Link>
-                  {eventSource === "sample" && <span className="rounded bg-[#fff2df] px-2 py-1 text-[9px] font-bold uppercase text-[#9a5d13]">Sample data</span>}
                 </div>
                 <p className="mt-1 text-xs text-[#738184]">Bookings and ticket redemption</p>
               </div>
