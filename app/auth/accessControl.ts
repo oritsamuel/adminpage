@@ -35,11 +35,11 @@ const defaultAccounts: AdminAccount[] = [
     },
     {
         id: "demo-staff",
-        name: "Demo Staff",
+        name: "Admin ",
         password: defaultFirstLoginPassword,
-        role: "Viewer",
+        role: "Admin",
         pages: ["ugc"],
-        mustChangePassword: true,
+        mustChangePassword: false,
     },
 ];
 
