@@ -1,7 +1,7 @@
 "use client";
 
 import { QRCodeCanvas } from "qrcode.react";
-import { type ChangeEvent, useCallback, useEffect, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { type AdminListItem, type AdminStatusMap, type BranchRecord, buildTippingUrl } from "./branchRepository";
 
 type ModalType = "add" | "admin" | "qr" | "details" | null;
@@ -327,11 +327,29 @@ export default function WaiterManagement() {
   const [isLoadingBranchOptions, setIsLoadingBranchOptions] = useState(false);
   const [isLoadingAdmins, setIsLoadingAdmins] = useState(false);
   const [merchantOptionsError, setMerchantOptionsError] = useState("");
-  const [persistedAdminStatuses, setPersistedAdminStatuses] = useState<AdminStatusMap>({});
+  const [persistedAdminStatuses, setPersistedAdminStatuses] = useState<AdminStatusMap>(() => readPersistedAdminStatuses());
+  const [isCompanySearchOpen, setIsCompanySearchOpen] = useState(false);
+  const [highlightedCompanyIndex, setHighlightedCompanyIndex] = useState(0);
+
+  const activeCompanySearchValue = activeModal === "add" ? adminForm.companyName : merchantForm.companyName;
+
+  const filteredCompanyOptions = useMemo(() => {
+    const query = activeCompanySearchValue.trim().toLowerCase();
+    if (!query) return merchantOptions;
+    return merchantOptions.filter((merchant) => merchant.name.toLowerCase().includes(query));
+  }, [activeCompanySearchValue, merchantOptions]);
 
   useEffect(() => {
-    setPersistedAdminStatuses(readPersistedAdminStatuses());
-  }, []);
+    if (!isCompanySearchOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target || !target.closest("[data-company-search-root]")) {
+        setIsCompanySearchOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [isCompanySearchOpen]);
 
   const loadBranchOptions = useCallback(async (merchantId: string) => {
     if (!merchantId) {
@@ -497,6 +515,34 @@ export default function WaiterManagement() {
     setLogoPreview("");
     setLogoFileName("");
     setMerchantForm({ companyId: "", companyName: "", branchId: "", branchName: "" });
+    setIsCompanySearchOpen(false);
+    setHighlightedCompanyIndex(0);
+  };
+
+  const handleCompanySearchSelect = async (merchant: MerchantOption) => {
+    setAdminForm((current) => ({
+      ...current,
+      companyId: merchant.id,
+      companyName: merchant.name,
+      branchId: "",
+      branchName: "",
+    }));
+    setIsCompanySearchOpen(false);
+    setHighlightedCompanyIndex(0);
+    await loadBranchOptions(merchant.id);
+  };
+
+  const handleQrCompanySearchSelect = async (merchant: MerchantOption) => {
+    setMerchantForm((current) => ({
+      ...current,
+      companyId: merchant.id,
+      companyName: merchant.name,
+      branchId: "",
+      branchName: "",
+    }));
+    setIsCompanySearchOpen(false);
+    setHighlightedCompanyIndex(0);
+    await loadBranchOptions(merchant.id);
   };
 
   const saveMerchant = async () => {
@@ -819,6 +865,11 @@ export default function WaiterManagement() {
             {merchantLoadError}
           </p>
         )}
+        {merchantOptionsError && (
+          <p role="alert" className="mb-4 rounded-[10px] bg-[#f9e8e8] px-3 py-2 text-sm text-[#8a2d2d]">
+            {merchantOptionsError}
+          </p>
+        )}
 
         <div className="overflow-hidden rounded-[18px] border border-[#dcd5d1] bg-[#f8f6f5] shadow-[0_1px_0_rgba(0,0,0,0.04)]">
           <div className="overflow-x-auto">
@@ -899,29 +950,106 @@ export default function WaiterManagement() {
               <>
                 <div className="space-y-5 pt-1">
                   <div>
-                     <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Company</h2>
+                    <h2 className="mb-7 text-[32px] font-bold tracking-[-0.04em] text-[#201e1d]">Add Company</h2>
                     <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Name</label>
-                    <select
-                      value={adminForm.companyId || "choose"}
-                      onChange={async (event) => {
-                        const nextCompanyId = event.target.value;
-                        if (!nextCompanyId || nextCompanyId === "choose") {
-                          setAdminForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
+                    <div data-company-search-root className="relative">
+                      <input
+                        value={adminForm.companyName}
+                        onFocus={() => {
+                          setIsCompanySearchOpen(true);
+                          setHighlightedCompanyIndex(0);
+                        }}
+                        onChange={(event) => {
+                          const typedCompanyName = event.target.value;
+                          const exactMatch = merchantOptions.find((merchant) => merchant.name.toLowerCase() === typedCompanyName.trim().toLowerCase());
+
+                          setAdminForm((current) => ({
+                            ...current,
+                            companyName: typedCompanyName,
+                            companyId: exactMatch?.id ?? "",
+                            branchId: exactMatch ? "" : "",
+                            branchName: exactMatch ? "" : "",
+                          }));
+
+                          if (exactMatch) {
+                            setIsCompanySearchOpen(false);
+                            setHighlightedCompanyIndex(0);
+                            void loadBranchOptions(exactMatch.id);
+                            return;
+                          }
+
                           setBranchOptions([]);
-                          return;
-                        }
-                        const nextCompanyName = merchantOptions.find((merchant) => merchant.id === nextCompanyId)?.name ?? "";
-                        setAdminForm((current) => ({ ...current, companyId: nextCompanyId, companyName: nextCompanyName, branchId: "", branchName: "" }));
-                        await loadBranchOptions(nextCompanyId);
-                      }}
-                      disabled={isLoadingMerchantOptions || !merchantOptions.length}
-                      className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#efeeed] px-4 text-[18px] text-[#2f2b29] outline-none transition focus:border-[#b3a7a1] disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <option value="choose">{isLoadingMerchantOptions ? "Loading companies..." : "Select a company"}</option>
-                      {merchantOptions.map((merchant) => (
-                        <option key={merchant.id} value={merchant.id}>{merchant.name}</option>
-                      ))}
-                    </select>
+                          setIsCompanySearchOpen(true);
+                          setHighlightedCompanyIndex(0);
+                        }}
+                        onKeyDown={(event) => {
+                          if (!filteredCompanyOptions.length) return;
+
+                          if (event.key === "ArrowDown") {
+                            event.preventDefault();
+                            setHighlightedCompanyIndex((current) => (current + 1) % filteredCompanyOptions.length);
+                            return;
+                          }
+
+                          if (event.key === "ArrowUp") {
+                            event.preventDefault();
+                            setHighlightedCompanyIndex((current) => (current - 1 + filteredCompanyOptions.length) % filteredCompanyOptions.length);
+                            return;
+                          }
+
+                          if (event.key === "Enter") {
+                            const selectedCompany = filteredCompanyOptions[highlightedCompanyIndex];
+                            if (selectedCompany) {
+                              event.preventDefault();
+                              void handleCompanySearchSelect(selectedCompany);
+                            }
+                          }
+                        }}
+                        placeholder={isLoadingMerchantOptions ? "Loading companies..." : "Type a company name"}
+                        disabled={isLoadingMerchantOptions || !merchantOptions.length}
+                        className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#efeeed] px-4 pr-12 text-[18px] text-[#2f2b29] outline-none transition focus:border-[#b3a7a1] disabled:cursor-not-allowed disabled:opacity-60"
+                      />
+
+                      {adminForm.companyName && !isLoadingMerchantOptions && merchantOptions.length > 0 && (
+                        <button
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            setAdminForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
+                            setBranchOptions([]);
+                            setIsCompanySearchOpen(true);
+                          }}
+                          className="absolute inset-y-0 right-3 flex items-center text-[20px] text-[#6b625d] transition hover:text-[#2f2b29]"
+                          aria-label="Clear company"
+                        >
+                          ×
+                        </button>
+                      )}
+
+                      {isCompanySearchOpen && (
+                        <div className="absolute left-0 right-0 z-30 mt-2 overflow-hidden rounded-[14px] border border-[#d8d1ce] bg-[#f8f6f5] shadow-[0_12px_30px_rgba(15,12,13,0.12)]">
+                          {filteredCompanyOptions.length > 0 ? (
+                            filteredCompanyOptions.map((merchant, index) => (
+                              <button
+                                key={merchant.id}
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => void handleCompanySearchSelect(merchant)}
+                                className={`flex w-full items-center justify-between px-4 py-3 text-left text-[17px] transition ${
+                                  index === highlightedCompanyIndex
+                                    ? "bg-[#efe9e6] text-[#201e1d]"
+                                    : "bg-[#f8f6f5] text-[#3b3634] hover:bg-[#f1efed]"
+                                }`}
+                              >
+                                <span>{merchant.name}</span>
+                              </button>
+                            ))
+                          ) : (
+                            <div className="px-4 py-3 text-[16px] text-[#6b625d]">No companies found.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div>
@@ -1111,33 +1239,104 @@ export default function WaiterManagement() {
                     <div className="space-y-5">
                       <div>
                         <label className="mb-2 block text-[16px] font-medium text-[#2f2b29]">Company Name</label>
-                        <select
-                          value={merchantForm.companyId || "choose"}
-                          onChange={async (event) => {
-                            const nextCompanyId = event.target.value;
-                            if (!nextCompanyId || nextCompanyId === "choose") {
-                              setMerchantForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
+                        <div data-company-search-root className="relative">
+                          <input
+                            value={merchantForm.companyName}
+                            onFocus={() => {
+                              setIsCompanySearchOpen(true);
+                              setHighlightedCompanyIndex(0);
+                            }}
+                            onChange={(event) => {
+                              const typedCompanyName = event.target.value;
+                              const exactMatch = merchantOptions.find((merchant) => merchant.name.toLowerCase() === typedCompanyName.trim().toLowerCase());
+
+                              setMerchantForm((current) => ({
+                                ...current,
+                                companyName: typedCompanyName,
+                                companyId: exactMatch?.id ?? "",
+                                branchId: "",
+                                branchName: "",
+                              }));
+
+                              if (exactMatch) {
+                                setIsCompanySearchOpen(false);
+                                setHighlightedCompanyIndex(0);
+                                void loadBranchOptions(exactMatch.id);
+                                return;
+                              }
+
                               setBranchOptions([]);
-                              return;
-                            }
-                            const nextCompanyName = merchantOptions.find((merchant) => merchant.id === nextCompanyId)?.name ?? "";
-                            setMerchantForm((current) => ({
-                              ...current,
-                              companyId: nextCompanyId,
-                              companyName: nextCompanyName,
-                              branchId: "",
-                              branchName: "",
-                            }));
-                            await loadBranchOptions(nextCompanyId);
-                          }}
-                          disabled={isLoadingMerchantOptions || !merchantOptions.length}
-                          className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 text-[18px] text-[#2f2b29] outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <option value="choose">{isLoadingMerchantOptions ? "Loading companies..." : "Select a company"}</option>
-                          {merchantOptions.map((merchant) => (
-                            <option key={merchant.id} value={merchant.id}>{merchant.name}</option>
-                          ))}
-                        </select>
+                              setIsCompanySearchOpen(true);
+                              setHighlightedCompanyIndex(0);
+                            }}
+                            onKeyDown={(event) => {
+                              if (!filteredCompanyOptions.length) return;
+
+                              if (event.key === "ArrowDown") {
+                                event.preventDefault();
+                                setHighlightedCompanyIndex((current) => (current + 1) % filteredCompanyOptions.length);
+                                return;
+                              }
+
+                              if (event.key === "ArrowUp") {
+                                event.preventDefault();
+                                setHighlightedCompanyIndex((current) => (current - 1 + filteredCompanyOptions.length) % filteredCompanyOptions.length);
+                                return;
+                              }
+
+                              if (event.key === "Enter") {
+                                const selectedCompany = filteredCompanyOptions[highlightedCompanyIndex];
+                                if (selectedCompany) {
+                                  event.preventDefault();
+                                  void handleQrCompanySearchSelect(selectedCompany);
+                                }
+                              }
+                            }}
+                            placeholder={isLoadingMerchantOptions ? "Loading companies..." : "Type a company name"}
+                            disabled={isLoadingMerchantOptions || !merchantOptions.length}
+                            className="h-[54px] w-full rounded-[14px] border border-[#d8d1ce] bg-[#f5f2f1] px-4 pr-12 text-[18px] text-[#2f2b29] outline-none focus:border-[#b3a7a1] disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+
+                          {merchantForm.companyName && !isLoadingMerchantOptions && merchantOptions.length > 0 && (
+                            <button
+                              type="button"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setMerchantForm((current) => ({ ...current, companyId: "", companyName: "", branchId: "", branchName: "" }));
+                                setBranchOptions([]);
+                                setIsCompanySearchOpen(true);
+                              }}
+                              className="absolute inset-y-0 right-3 flex items-center text-[20px] text-[#6b625d] transition hover:text-[#2f2b29]"
+                              aria-label="Clear company"
+                            >
+                              ×
+                            </button>
+                          )}
+
+                          {isCompanySearchOpen && (
+                            <div className="absolute left-0 right-0 z-30 mt-2 overflow-hidden rounded-[14px] border border-[#d8d1ce] bg-[#f8f6f5] shadow-[0_12px_30px_rgba(15,12,13,0.12)]">
+                              {filteredCompanyOptions.length > 0 ? (
+                                filteredCompanyOptions.map((merchant, index) => (
+                                  <button
+                                    key={merchant.id}
+                                    type="button"
+                                    onMouseDown={(event) => event.preventDefault()}
+                                    onClick={() => void handleQrCompanySearchSelect(merchant)}
+                                    className={`flex w-full items-center justify-between px-4 py-3 text-left text-[17px] transition ${
+                                      index === highlightedCompanyIndex
+                                        ? "bg-[#efe9e6] text-[#201e1d]"
+                                        : "bg-[#f8f6f5] text-[#3b3634] hover:bg-[#f1efed]"
+                                    }`}
+                                  >
+                                    <span>{merchant.name}</span>
+                                  </button>
+                                ))
+                              ) : (
+                                <div className="px-4 py-3 text-[16px] text-[#6b625d]">No companies found.</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       <div>
