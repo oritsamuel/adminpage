@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type TicketTransaction = {
   id: string;
@@ -161,7 +161,7 @@ export default function EventManagement() {
   const uniqueOrganizers = Array.from(new Set(transactions.map(t => t.eventOrganizer))).sort();
   const uniquePayments = Array.from(new Set(transactions.map(t => t.paymentMethod))).sort();
 
-  const stopCamera = () => {
+  const stopCamera = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -170,9 +170,9 @@ export default function EventManagement() {
       videoRef.current.srcObject = null;
     }
     setCameraReady(false);
-  };
+  }, []);
 
-  const resolveTicketFromCode = (value: string) => {
+  const resolveTicketFromCode = useCallback((value: string) => {
     const normalized = value.trim();
     if (!normalized) {
       setScanError('Enter or scan a ticket ID or voucher code.');
@@ -195,9 +195,9 @@ export default function EventManagement() {
     setScanValue('');
     setScanError('');
     stopCamera();
-  };
+  }, [stopCamera, transactions]);
 
-  const startCameraScan = async () => {
+  const startCameraScan = useCallback(async () => {
     const BarcodeDetectorCtor = (window as Window & {
       BarcodeDetector?: new (options?: { formats?: string[] }) => {
         detect(source: HTMLVideoElement): Promise<Array<{ rawValue: string }>>;
@@ -245,7 +245,7 @@ export default function EventManagement() {
       setScanError('Unable to access the camera. Please type the ticket ID instead.');
       setCameraReady(false);
     }
-  };
+  }, [resolveTicketFromCode]);
 
   const handleRedeem = async (id: string) => {
     try {
@@ -279,16 +279,22 @@ export default function EventManagement() {
 
   useEffect(() => {
     return () => stopCamera();
-  }, []);
+  }, [stopCamera]);
 
   useEffect(() => {
     if (!isScanOpen) {
-      stopCamera();
       return;
     }
 
-    void startCameraScan();
-  }, [isScanOpen]);
+    const timerId = window.setTimeout(() => {
+      void startCameraScan();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timerId);
+      stopCamera();
+    };
+  }, [isScanOpen, startCameraScan, stopCamera]);
 
   const filtered = transactions.filter(t => {
     const q = searchQuery.toLowerCase();
@@ -651,10 +657,8 @@ export default function EventManagement() {
               </button>
             </div>
 
-            {/* Status badge */}
-            <div className="modal-status-row">
-              {getStatusBadge(selectedTicket.status)}
-              {getTicketBadge(selectedTicket.ticketType)}
+            <div className="modal-title-row">
+              <span className="modal-compact-status">{selectedTicket.status} {selectedTicket.ticketType}</span>
             </div>
 
             <div className="modal-body">

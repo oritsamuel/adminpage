@@ -32,11 +32,12 @@ export default function LoginPage() {
     <main className="min-h-screen bg-white lg:grid lg:grid-cols-2">
       <section className="flex min-h-[38vh] items-center justify-center bg-[#951d43] px-8 py-12 text-white lg:min-h-screen lg:px-16">
         <div className="w-full max-w-md">
-          <div className="mx-auto mb-8 grid h-20 w-20 place-items-center rounded-3xl border border-white/20 bg-white/10 text-4xl lg:mx-0">▣</div>
-          <h1 className="font-serif text-5xl font-bold tracking-tight">Hulubeje</h1>
-          <p className="mt-3 text-sm font-semibold tracking-[0.22em] text-white/70 uppercase">Tip management system</p>
+          {/* <div className="mx-auto mb-8 grid h-20 w-20 place-items-center rounded-3xl border border-white/20 bg-white/10 text-4xl lg:mx-0">▣</div> */}
+          <img src="/Hlogo.png" className="mx-auto mb-8 grid h-20 w-50 place-items-center lg:mx-0"/>
+          {/* <h1 className="font-serif text-5xl font-bold tracking-tight">Hulubeje</h1> */}
+          <p className="mt-3 text-sm font-semibold tracking-[0.22em] text-white/70 uppercase">All in one management system</p>
           <div className="mt-12 space-y-5 text-sm text-white/90">
-            {["Waiter tip management", "QR-based payments", "Branch-level control"].map((item) => <p key={item} className="flex items-center gap-3"><span className="grid h-5 w-5 place-items-center rounded-full bg-white/20 text-xs">✓</span>{item}</p>)}
+            {["Waiter Tip management", "QR-based payments", "Branch-level control"].map((item) => <p key={item} className="flex items-center gap-3"><span className="grid h-5 w-5 place-items-center rounded-full bg-white/20 text-xs">✓</span>{item}</p>)}
           </div>
         </div>
       </section>
