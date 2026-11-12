@@ -25,6 +25,19 @@ export type BranchRecord = {
   adminList: AdminListItem[];
 };
 
+function encodeBase64Url(data: string) {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(data, "utf8").toString("base64");
+  }
+
+  const bytes = new TextEncoder().encode(data);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return globalThis.btoa(binary);
+}
+
 export function buildTippingUrl(companyId: number | string, branchId: number | string) {
   const safeCompanyId = String(companyId ?? "").trim();
   const safeBranchId = String(branchId ?? "").trim();
@@ -44,11 +57,16 @@ export function buildTippingUrl(companyId: number | string, branchId: number | s
       : "https://waiters-tip.vercel.app"
   );
 
+  const payload = {
+    companyId: safeCompanyId,
+    branchId: safeBranchId,
+    branchCode: safeBranchId,
+  };
+
   const url = new URL(baseUrl);
   url.pathname = "/tip";
   url.search = "";
   url.hash = "";
-  url.searchParams.set("companyId", safeCompanyId);
-  url.searchParams.set("branchId", safeBranchId);
+  url.searchParams.set("data", encodeBase64Url(JSON.stringify(payload)));
   return url.toString();
 }
